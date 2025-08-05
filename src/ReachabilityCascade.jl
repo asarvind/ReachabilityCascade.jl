@@ -5,6 +5,10 @@ using LinearAlgebra, Random, LazySets, Flux, JLD2, Plots, Statistics, Plots.Meas
 # from controlsystem.jl
 export ContinuousSystem, DiscreteRandomSystem
 
+# from ann.jl
+export transformer
+
 include("controlsystem.jl")
+include("ann.jl")
 
 end

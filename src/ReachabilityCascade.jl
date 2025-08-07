@@ -11,4 +11,7 @@ export transformer
 include("controlsystem.jl")
 include("ann.jl")
 
+# examples
+include("examples/car/dynamics.jl")
+
 end

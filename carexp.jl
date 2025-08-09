@@ -20,7 +20,7 @@ Pkg.activate("SymlinkReachabilityCascade")
 end
 
 # ╔═╡ c8d1f042-ad49-4971-aa32-b9c15d241da6
-using ReachabilityCascade, LinearAlgebra, Random, LazySets, Flux
+using ReachabilityCascade, LinearAlgebra, Random, LazySets, Flux, Statistics
 
 # ╔═╡ c6105657-7697-462a-84f0-5b6cb0ffb4b1
 import ReachabilityCascade.CarDynamics as CD
@@ -47,65 +47,70 @@ function discrete_car(t::Real)
 	return DiscreteRandomSystem(cs, V, κ, t)	
 end
 
-# ╔═╡ 9abc6845-e73b-41c0-ab1e-0d0cfcb04b44
-"""
-    add_diffusion_noise(x::AbstractVector, num_steps::Int; beta::Float64 = 0.02) -> Matrix
+# ╔═╡ 48f1de66-e038-42db-8044-b5f83c86eacf
+function discrete_vehicles(t::Real)
 
-Applies a stable-diffusion-like noise process to the input vector `x`.
-Returns a matrix whose columns represent the progressively noised versions of `x` across `num_steps`.
+	X = Hyperrectangle(
+		vcat([50, 3.5, 0.0, 10.0], zeros(3), 50.0, 1.75, 5.0, 50.0, 5.25, -10.0),
+		[50, 3.5, 1.0, 10.0, 1.0, 1.0, 0.2, 50.0, 0.1, 1.0, 50.0, 0.1, 1.0]
+	)	
 
-# Arguments
-- `x::AbstractVector`: The input vector to be noised.
-- `num_steps::Int`: Number of diffusion steps.
-- `beta::Float64`: Constant noise variance applied at each step (default = 0.02).
+	V = Hyperrectangle(
+		zeros(2), [1.0, 10.0]
+	)
 
-# Returns
-- `Matrix`: A matrix of shape `(length(x), num_steps)` where each column is the noised vector at a diffusion step.
-"""
-function add_diffusion_noise(x::AbstractVector, num_steps::Int; beta::Float64 = 0.02)
-    x = Float32.(x)
-    alpha = 1 - beta
+	function vehicle_transition(x::AbstractVector, u::AbstractVector)
+		
+		ds = discrete_car(t)
+		ego_next = ds(x[1:7], u*0.2)
+	
+		x8next = x[8] + t*x[10]
+		x11next = x[11] + t*x[13]
+	
+		xnext = vcat(ego_next, x8next, x[9:10], x11next, x[12:13])
+	
+		return xnext
+	end
 
-    D = length(x)
-    noise_matrix = Matrix{Float32}(undef, D, num_steps)
+	return DiscreteRandomSystem(X, V, vehicle_transition)
 
-    xt = x
-    for t in 1:num_steps
-        noise = randn(Float32, D)
-        xt = sqrt(alpha) * xt .+ sqrt(beta) * noise
-        noise_matrix[:, t] = xt
-    end
-
-    return noise_matrix
 end
 
-# ╔═╡ 0f6cc562-13a2-445f-8bc8-4f3be45d6ecc
-function vehicle_transition(x::AbstractVector, u::AbstractVector)
-	t = 0.25 
-	
-	ds = discrete_car(t)
-	ego_next = ds(x[1:7], u)
-
-	x8next = x[8] + t*x[10]
-	x11next = x[11] + t*x[13]
-
-	xnext = vcat(ego_next, x8next, x[9:10], x11next, x[12:13])
-
+# ╔═╡ 3ec5c7b7-cae2-45a8-83ce-2c77993ae9fe
+function safety_fn(x::AbstractVector)
 	safety_distance = 2.5
 
-	cur_fol_dist = norm(x[1:2] - x[8:9]) - safety_distance
-	cur_on_dist = norm(x[1:2] - x[11:12]) - safety_distance
-	next_fol_dist = norm(xnext[1:2] - xnext[8:9]) - safety_distance
-	next_on_dist = norm(xnext[1:2] - xnext[11:12]) - safety_distance
+	ds = discrete_car(0.25)
 
-	fol_dist = min(cur_fol_dist, next_fol_dist)
-	on_dist = min(cur_on_dist, next_on_dist)
+	fol_dist = norm(x[1:2] - x[8:9]) - safety_distance
+	on_dist = norm(x[1:2] - x[11:12]) - safety_distance
 
-	cur_cons_dist = 1.0 .- (x[1:7] .- ds.X.center) ./ (ds.X.radius .+ 1e-8)
-	next_cons_dist = 1.0 .- (xnext[1:7] .- ds.X.center) ./ (ds.X.radius .+ 1e-8)
-	cons_dist = min(cur_cons_dist, next_cons_dist)
+	constraint_dist = 1.0 .- abs.(x[1:7] .- ds.X.center) ./ (ds.X.radius .+ 1e-8)
 
-	return xnext, vcat(fol_dist, on_dist, cons_dist)
+	return vcat(fol_dist, on_dist, constraint_dist)
+end
+
+# ╔═╡ 73693311-fab8-4ff7-8c11-1814c5873283
+function target_fn(x::AbstractVector)
+	return [x[1] - x[8]]
+end
+
+# ╔═╡ 52218b79-4396-45f6-a06d-c0e8e30e7cb0
+function intertarget_fn(x::AbstractVector)
+	return x[1:7]
+end
+
+# ╔═╡ 127ba1c6-58c5-4609-b354-4b87abe35452
+let
+	state_dim, batch = 6, 8
+	x  = randn(state_dim, batch)
+	x0 = randn(state_dim, batch)
+	t  = randn(batch)
+	model = NRLE(state_dim; depth=4, width=256)
+	z  = model(x, x0, t)                      # forward encoding (z)
+	ll = loglikelihood(model, x, x0, t)       # log-likelihoods
+	xr = inverse(model, z, x0, t)             # reconstruction (x)
+	xr - x
 end
 
 # ╔═╡ Cell order:
@@ -113,5 +118,8 @@ end
 # ╠═c8d1f042-ad49-4971-aa32-b9c15d241da6
 # ╠═c6105657-7697-462a-84f0-5b6cb0ffb4b1
 # ╠═87dc46a4-8f00-473a-9e37-817fc91e7ffe
-# ╠═9abc6845-e73b-41c0-ab1e-0d0cfcb04b44
-# ╠═0f6cc562-13a2-445f-8bc8-4f3be45d6ecc
+# ╠═48f1de66-e038-42db-8044-b5f83c86eacf
+# ╠═3ec5c7b7-cae2-45a8-83ce-2c77993ae9fe
+# ╠═73693311-fab8-4ff7-8c11-1814c5873283
+# ╠═52218b79-4396-45f6-a06d-c0e8e30e7cb0
+# ╠═127ba1c6-58c5-4609-b354-4b87abe35452

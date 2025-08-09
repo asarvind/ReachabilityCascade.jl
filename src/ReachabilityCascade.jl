@@ -6,10 +6,14 @@ using LinearAlgebra, Random, LazySets, Flux, JLD2, Plots, Statistics, Plots.Meas
 export ContinuousSystem, DiscreteRandomSystem
 
 # from ann.jl
-export transformer
+export Flow, inverse, loglikelihood, nll
+
+# from nrle.jl
+export NRLE
 
 include("controlsystem.jl")
 include("ann.jl")
+include("nrle.jl")
 
 # examples
 include("examples/car/dynamics.jl")

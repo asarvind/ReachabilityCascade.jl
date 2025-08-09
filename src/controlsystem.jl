@@ -168,20 +168,101 @@ function (ds::DiscreteRandomSystem)(x::Vector{<:Real}, u::Vector{<:Real})
     ds.f(x, u)
 end
 
-"""
-    (ds::DiscreteRandomSystem)(x::Vector{<:Real}, umat::Matrix{<:Real})
+# """
+#     (ds::DiscreteRandomSystem)(x::Vector{<:Real}, umat::Matrix{<:Real})
 
-Computes the state trajectory of a discrete time system with randomized dynamics, given an initial state and a sequence of control inputs.
+# Computes the state trajectory of a discrete time system with randomized dynamics, given an initial state and a sequence of control inputs.
+
+# # Args
+# - x :: Vector{<:Real} - initial state.
+# - umat :: Matrix{<:Real} - sequence of control inputs as columns of a matrix.
+# """
+# function (ds::DiscreteRandomSystem)(x::Vector{<:Real}, umat::Matrix{<:Real})
+#     xmat = x
+#     for u in eachcol(umat)
+#         new_state = ds(xmat[:, end], Vector(u))
+#         xmat = hcat(xmat, new_state)
+#     end
+#     xmat
+# end
+
+"""
+    (ds::DiscreteRandomSystem)(x::Vector{<:Real}, umat::Matrix{<:Real}, safety_fn::Function = x -> ones(length(x)))
+
+Computes the state trajectory of a discrete-time system with randomized dynamics, given an initial state and a sequence of control inputs, **stopping early if safety is violated**.
+
+A state `x` is considered **safe** if **all** components of `safety_fn(x)` are strictly greater than zero. The returned trajectory includes the initial state and all subsequent **safe** states. If the initial state is already unsafe, only the initial state is returned.
+
+If no `safety_fn` is provided, a trivial function returning all ones is used, meaning safety is always satisfied.
 
 # Args
-- x :: Vector{<:Real} - initial state.
-- umat :: Matrix{<:Real} - sequence of control inputs as columns of a matrix.
+- `x :: Vector{<:Real}` — initial state.
+- `umat :: Matrix{<:Real}` — sequence of control inputs as columns of a matrix.
+- `safety_fn :: Function` — function mapping a state vector to a vector of safety margins; state is safe iff all elements are `> 0` (default always returns positive values).
+
+# Returns
+- `Matrix{Float64}` — a matrix whose columns are the visited **safe** states; the first unsafe successor (if any) is **not** included.
 """
-function (ds::DiscreteRandomSystem)(x::Vector{<:Real}, umat::Matrix{<:Real})
-    xmat = x
-    for u in eachcol(umat)
-        new_state = ds(xmat[:, end], Vector(u))
-        xmat = hcat(xmat, new_state)
+function (ds::DiscreteRandomSystem)(x::Vector{<:Real}, umat::Matrix{<:Real}, safety_fn::Function = x -> ones(length(x)))
+    # Ensure column matrix with the initial state
+    xmat = reshape(Float64.(x), :, 1)
+
+    # If initial state is unsafe, return it immediately
+    if !all(safety_fn(view(xmat, :, 1)) .> 0)
+        return xmat
     end
-    xmat
+
+    # Roll out controls, stopping at first violation
+    for u in eachcol(umat)
+        x_new = ds(xmat[:, end], Vector(u))
+        if all(safety_fn(x_new) .> 0)
+            xmat = hcat(xmat, x_new)
+        else
+            break
+        end
+    end
+
+    return xmat
 end
+
+"""
+    (ds::DiscreteRandomSystem)(x::Vector{<:Real}, κ::Function, steps::Integer, safety_fn::Function = x -> ones(length(x)))
+
+Computes the state trajectory of a discrete-time system with randomized dynamics, given an initial state and a **feedback control** function `κ(x) → u`, **stopping early if safety is violated**.
+
+A state `x` is considered **safe** if **all** components of `safety_fn(x)` are strictly greater than zero. The returned trajectory includes the initial state and all subsequent **safe** states. If the initial state is already unsafe, only the initial state is returned.
+
+If no `safety_fn` is provided, a trivial function returning all ones is used, meaning safety is always satisfied.
+
+# Args
+- `x :: Vector{<:Real}` — initial state.
+- `κ :: Function` — state feedback law mapping the current state to a control input `u`.
+- `steps :: Integer` — maximum number of rollout steps to simulate.
+- `safety_fn :: Function` — function mapping a state vector to a vector of safety margins; state is safe iff all elements are `> 0` (default always returns positive values).
+
+# Returns
+- `Matrix{Float64}` — a matrix whose columns are the visited **safe** states; the first unsafe successor (if any) is **not** included.
+"""
+function (ds::DiscreteRandomSystem)(x::Vector{<:Real}, κ::Function, steps::Integer, safety_fn::Function = x -> ones(length(x)))
+    # Ensure column matrix with the initial state
+    xmat = reshape(Float64.(x), :, 1)
+
+    # If initial state is unsafe, return it immediately
+    if !all(safety_fn(view(xmat, :, 1)) .> 0)
+        return xmat
+    end
+
+    # Closed-loop rollout, stopping at first violation
+    for _ in 1:steps
+        u = κ(view(xmat, :, size(xmat, 2)))            # feedback control based on current state
+        x_new = ds(xmat[:, end], Vector(u))  # advance system with control
+        if all(safety_fn(x_new) .> 0)
+            xmat = hcat(xmat, Float64.(x_new))
+        else
+            break
+        end
+    end
+
+    return xmat
+end
+

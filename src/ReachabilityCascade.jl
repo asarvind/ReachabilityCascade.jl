@@ -12,7 +12,7 @@ export Flow, inverse, loglikelihood, nll
 export NRLE
 
 include("controlsystem.jl")
-include("ann.jl")
+include("flow.jl")
 include("nrle.jl")
 
 # examples

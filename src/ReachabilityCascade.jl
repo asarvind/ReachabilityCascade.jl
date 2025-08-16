@@ -8,12 +8,16 @@ export ContinuousSystem, DiscreteRandomSystem
 # from ann.jl
 export Flow, inverse, loglikelihood, nll
 
-# from nrle.jl
-export NRLE
+# from glu.jl
+export GLU
+
+# from transitionnet.jl
+export TransitionNet
 
 include("controlsystem.jl")
 include("flow.jl")
-include("nrle.jl")
+include("glu.jl")
+include("transitionnet.jl")
 
 # examples
 include("examples/car/dynamics.jl")

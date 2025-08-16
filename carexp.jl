@@ -20,255 +20,10 @@ Pkg.activate("SymlinkReachabilityCascade")
 end
 
 # ╔═╡ c8d1f042-ad49-4971-aa32-b9c15d241da6
-using ReachabilityCascade, LinearAlgebra, Random, LazySets, Flux, Statistics, NLopt
+using ReachabilityCascade, LinearAlgebra, Random, LazySets, Flux, Statistics, JuMP, OSQP, SparseArrays, HiGHS, Clarabel
 
-# ╔═╡ d7cb02f0-06b3-4e8e-85b0-302a0c3f7ca0
-# L-BFGS optimizer in pure Julia (no external deps)
-# -------------------------------------------------
-# Usage
-# ------
-# Define an objective that can supply value and gradient via `fg!(g, x)`:
-#   using .SimpleLBFGS
-#   function fg!(g, x)
-#       g .= 2 .* x
-#       return sum(abs2, x)
-#   end
-#   x0 = randn(5)
-#   res = lbfgs(fg!, x0; m=10, maxiter=200, gtol=1e-8, verbose=true)
-#   @show res.x, res.f, res.converged, res.reason
-#
-# Alternatively, if you already have separate `f(x)` and `grad!(g,x)`,
-# use the convenience wrapper:
-#   res = lbfgs(x -> sum(abs2, x), (g,x)->(g .= 2x), x0)
-#
-# This implementation uses a strong-Wolfe line search and the standard
-# two-loop recursion to apply the L-BFGS inverse Hessian.
-
-module SimpleLBFGS
-
-using LinearAlgebra
-using Printf
-
-export lbfgs, LBFGSResult
-
-# --------------------------- Result type ------------------------------------
-Base.@kwdef mutable struct LBFGSResult{T}
-    x::Vector{T}
-    f::T
-    gnorm::T
-    iters::Int
-    f_evals::Int
-    g_evals::Int
-    converged::Bool
-    reason::String
-end
-
-# ----------------------- Strong-Wolfe line search ---------------------------
-"""
-    strong_wolfe_line_search(fg!, x, f0, g0, p; c1=1e-4, c2=0.9, alpha0=1.0, maxiter=20)
-
-Perform a strong-Wolfe line search along direction `p` from `x`.
-`fg!(g, x)` should return `f(x)` and write the gradient into `g`.
-Returns `(alpha, f_new, g_new, fevals, gevals)`.
-"""
-function strong_wolfe_line_search(fg!, x::AbstractVector, f0::Real, g0::AbstractVector,
-                                  p::AbstractVector;
-                                  c1=1e-4, c2=0.9, alpha0=1.0, maxiter=20)
-    @assert c1 > 0 && c1 < c2 < 1 "Require 0 < c1 < c2 < 1"
-    @assert dot(p, g0) < 0 "Search direction must be a descent direction"
-
-    gtmp = similar(g0)
-    xtrial = similar(x)
-    function eval_at!(α)
-        @inbounds @. xtrial = x + α * p
-        f = fg!(gtmp, xtrial)
-        return f, dot(gtmp, p)
-    end
-
-    ϕ0 = f0
-    dϕ0 = dot(g0, p)
-
-    α_lo, ϕ_lo, dϕ_lo = 0.0, ϕ0, dϕ0
-    α_hi = NaN; ϕ_hi = NaN
-
-    α = alpha0
-    fevals = 0; gevals = 0
-
-    for _ in 1:maxiter
-        ϕ, dϕ = eval_at!(α); fevals += 1; gevals += 1
-
-        if (ϕ > ϕ0 + c1*α*dϕ0) || (!isnan(ϕ_hi) && ϕ ≥ ϕ_lo)
-            return zoom!(eval_at!, ϕ0, dϕ0, α_lo, ϕ_lo, dϕ_lo, α, ϕ; c1, c2,
-                         gtmp, fevals, gevals)
-        end
-
-        if abs(dϕ) ≤ -c2*dϕ0
-            return α, ϕ, copy(gtmp), fevals, gevals
-        end
-
-        if dϕ ≥ 0
-            return zoom!(eval_at!, ϕ0, dϕ0, α, ϕ, dϕ, α_lo, ϕ_lo; c1, c2,
-                         gtmp, fevals, gevals)
-        end
-
-        α_lo, ϕ_lo, dϕ_lo = α, ϕ, dϕ
-        α = 2α
-        α_hi = α # keep track of an upper bound (loose)
-    end
-
-    # Fallback: last eval
-    ϕ, _ = eval_at!(α); fevals += 1; gevals += 1
-    return α, ϕ, copy(gtmp), fevals, gevals
-end
-
-function zoom!(eval_at!, ϕ0, dϕ0, α_lo, ϕ_lo, dϕ_lo, α_hi, ϕ_hi; c1=1e-4, c2=0.9,
-               gtmp=nothing, fevals=0, gevals=0, maxiter=25)
-    for _ in 1:maxiter
-        α = 0.5*(α_lo + α_hi)
-        ϕ, dϕ = eval_at!(α); fevals += 1; gevals += 1
-        if (ϕ > ϕ0 + c1*α*dϕ0) || (ϕ ≥ ϕ_lo)
-            α_hi, ϕ_hi = α, ϕ
-        else
-            if abs(dϕ) ≤ -c2*dϕ0
-                return α, ϕ, copy(gtmp), fevals, gevals
-            end
-            if dϕ*(α_hi - α_lo) ≥ 0
-                α_hi, ϕ_hi = α_lo, ϕ_lo
-            end
-            α_lo, ϕ_lo, dϕ_lo = α, ϕ, dϕ
-        end
-    end
-    return α_lo, ϕ_lo, copy(gtmp), fevals, gevals
-end
-
-# ------------------------- Two-loop recursion -------------------------------
-function apply_lbfgs!(q, gk, S, Y, ρ, αtmp)
-    copy!(q, gk)
-    k = length(ρ)
-    for i in reverse(1:k)
-        αtmp[i] = ρ[i] * dot(S[i], q)
-        @. q = q - αtmp[i] * Y[i]
-    end
-    if k > 0
-        sy = dot(S[k], Y[k])
-        yy = dot(Y[k], Y[k])
-        γ = sy / yy
-        @. q = γ * q
-    end
-    for i in 1:k
-        β = ρ[i] * dot(Y[i], q)
-        @. q = q + (αtmp[i] - β) * S[i]
-    end
-    return q
-end
-
-# ----------------------------- Main solver ---------------------------------
-"""
-    lbfgs(fg!, x0; m=10, maxiter=1000, gtol=1e-6, ftol=1e-12, xtol=1e-12,
-          c1=1e-4, c2=0.9, alpha0=1.0, verbose=false)
-
-Run L-BFGS starting at `x0` for objective provided by `fg!(g, x)` which must
-return `f(x)` and write the gradient into `g`.
-
-Keyword arguments:
-- `m`: memory (number of correction pairs to keep)
-- `maxiter`: maximum iterations
-- `gtol`: stop if `norm(g) ≤ gtol * max(1, norm(x))`
-- `ftol`: stop if relative decrease in `f` is below this threshold
-- `xtol`: stop if step size is extremely small
-- `c1`, `c2`: strong-Wolfe parameters
-- `alpha0`: initial trial step for the line search
-- `verbose`: print iteration log
-
-Returns `LBFGSResult`.
-"""
-function lbfgs(fg!::Function, x0::AbstractVector;
-               m::Int=10, maxiter::Int=1000, gtol::Real=1e-6,
-               ftol::Real=1e-12, xtol::Real=1e-12,
-               c1::Real=1e-4, c2::Real=0.9, alpha0::Real=1.0,
-               verbose::Bool=false)
-
-    T = eltype(x0)
-    x = copy(Vector{T}(x0))
-    g = similar(x)
-    f = fg!(g, x)
-
-    f_evals = 1
-    g_evals = 1
-
-    # L-BFGS storage
-    S = Vector{Vector{T}}()
-    Y = Vector{Vector{T}}()
-    ρ = T[]
-
-    # temporaries
-    p = similar(x)
-    q = similar(x)
-    αtmp = T[]
-
-    gnorm = norm(g)
-    f_old = f
-
-    if verbose
-        println(rpad("iter",6), rpad("f(x)",16), rpad("‖g‖",12), rpad("α",10), "#pairs")
-        @printf("%5d  %-14.6e %-10.3e %-8s %d\n", 0, f, gnorm, "-", 0)
-    end
-
-    for k in 1:maxiter
-        if gnorm ≤ gtol * max(1.0, norm(x))
-            return LBFGSResult(x, f, gnorm, k-1, f_evals, g_evals, true, "first-order optimality")
-        end
-
-        resize!(αtmp, length(ρ))
-        apply_lbfgs!(q, g, S, Y, ρ, αtmp)
-        @. p = -q
-        if dot(p, g) ≥ 0
-            @. p = -g
-        end
-
-        α, f_new, g_new, fe, ge = strong_wolfe_line_search(fg!, x, f, g, p; c1, c2, alpha0)
-        f_evals += fe
-        g_evals += ge
-
-        x_new = x .+ α .* p
-        s = x_new .- x
-        y = g_new .- g
-
-        sy = dot(s, y)
-        if sy > 1e-10
-            push!(S, s); push!(Y, y); push!(ρ, 1/sy)
-            if length(S) > m
-                popfirst!(S); popfirst!(Y); popfirst!(ρ)
-            end
-        end
-
-        x = x_new
-        g = g_new
-        f_old, f = f, f_new
-        gnorm = norm(g)
-
-        if verbose
-            @printf("%5d  %-14.6e %-10.3e %-8.2e %d\n", k, f, gnorm, α, length(S))
-        end
-
-        if abs(f_old - f) ≤ ftol * max(1.0, abs(f_old))
-            return LBFGSResult(x, f, gnorm, k, f_evals, g_evals, true, "small relative decrease in f")
-        end
-        if norm(s) ≤ xtol * max(1.0, norm(x))
-            return LBFGSResult(x, f, gnorm, k, f_evals, g_evals, true, "step size too small")
-        end
-    end
-
-    return LBFGSResult(x, f, gnorm, maxiter, f_evals, g_evals, false, "max iterations reached")
-end
-
-# Convenience wrapper: separate f(x) and grad!(g,x)
-function lbfgs(f::Function, grad!::Function, x0::AbstractVector; kwargs...)
-    fg!(g, x) = (grad!(g, x); f(x))
-    return lbfgs(fg!, x0; kwargs...)
-end
-
-end # module
+# ╔═╡ b08a9444-65f3-45fa-825a-94ce96bef202
+import NLopt
 
 # ╔═╡ c6105657-7697-462a-84f0-5b6cb0ffb4b1
 import ReachabilityCascade.CarDynamics as CD
@@ -277,7 +32,7 @@ import ReachabilityCascade.CarDynamics as CD
 function discrete_car(t::Real)
 	X = Hyperrectangle(
 		vcat([50, 3.5, 0.0, 10.0], zeros(3)),
-		[50, 3.5, 1.0, 10.0, 1.0, 1.0, 0.2]
+		[100, 3.5, 1.0, 10.0, 1.0, 1.0, 0.2]
 	)
 
 	U = Hyperrectangle(
@@ -290,7 +45,7 @@ function discrete_car(t::Real)
 
 	cs = ContinuousSystem(X, U, CD.carfield)
 	
-	κ = (x, u, t) -> [u[1], 0.4*(u[2] - x[3])]
+	κ = (x, u, t) -> [0.4*(u[1] - x[3]), u[2]]
 
 	return DiscreteRandomSystem(cs, V, κ, t)	
 end
@@ -300,7 +55,7 @@ function discrete_vehicles(t::Real)
 
 	X = Hyperrectangle(
 		vcat([50, 3.5, 0.0, 10.0], zeros(3), 50.0, 1.75, 5.0, 50.0, 5.25, -10.0),
-		[50, 3.5, 1.0, 10.0, 1.0, 1.0, 0.2, 50.0, 0.1, 1.0, 50.0, 0.1, 1.0]
+		[100, 3.5, 1.0, 10.0, 1.0, 1.0, 0.2, 100.0, 0.1, 1.0, 100.0, 0.1, 1.0]
 	)	
 
 	V = Hyperrectangle(
@@ -310,7 +65,7 @@ function discrete_vehicles(t::Real)
 	function vehicle_transition(x::AbstractVector, u::AbstractVector)
 		
 		ds = discrete_car(t)
-		ego_next = ds(x[1:7], u*0.2)
+		ego_next = ds(x[1:7], u)
 	
 		x8next = x[8] + t*x[10]
 		x11next = x[11] + t*x[13]
@@ -318,7 +73,7 @@ function discrete_vehicles(t::Real)
 		xnext = vcat(ego_next, x8next, x[9:10], x11next, x[12:13])
 	
 		return xnext
-	end
+	end	 
 
 	return DiscreteRandomSystem(X, V, vehicle_transition)
 
@@ -348,19 +103,6 @@ function intertarget_fn(x::AbstractVector)
 	return x[1:7]
 end
 
-# ╔═╡ 687648fc-2d2f-4cd4-9ff7-d0524615d70c
-function batch(xmat::Matrix{<:Real}; gap=1)
-
-	N = size(xmat, 2)÷2
-	@assert N > 0 "Number of columns of array should be at least 2"
-
-	batch = [
-		(xmat[:, t+k], xmat[:, t], k) for t in 1:gap:N for k in t:gap:N
-	]
-
-	return batch
-end
-
 # ╔═╡ 77293f6a-0141-4fa0-81da-5a74e35b2537
 function linearize(ds::DiscreteRandomSystem, x::AbstractVector, u::AbstractVector=ds.U.center; δ=0.001)
 	n = size(x, 1)
@@ -388,93 +130,334 @@ function linearize(ds::DiscreteRandomSystem, x::AbstractVector, u::AbstractVecto
 	return A, B, c
 end
 
-# ╔═╡ c03edf5d-2bf1-42c2-b4e8-8c107f535389
-function quadratic_coeffs(f::Flow, context::AbstractVector, transform::Function, x::AbstractVector; δ::Real = 0.001)
-	
-	n = size(x, 1)
+# ╔═╡ 7bc0465a-d505-4f6f-8dd5-cf614c36ebd4
+# Discrete-time LQR + Lyapunov SDP using Clarabel
+# Single-call API: lqr_lyap(A,B,Q,R) -> (K, S, info)
+# - Computes infinite-horizon discrete LQR gain K for (A,B,Q,R)
+# - Synthesizes a *quadratic Lyapunov matrix* S ≻ 0 for Acl = A - B*K via an SDP
+#   using Clarabel with true semidefinite constraints.
+#
+# Lyapunov SDP (discrete-time): find S ≻ 0 s.t.
+#   Acl' S Acl - S + Qℓ ≼ 0   ⇔   S - Acl' S Acl - Qℓ ⪰ 0
+# We also impose S ⪰ ε I for numerical robustness.
+# Objective: minimize trace(S) (well-conditioned smallest certificate).
+#
 
-	A = ones(n, n)
-	b = ones(n)
+"""
+    lqr_lyap(A, B, Q, R; ε=1e-8, Qlyap=nothing, tol=1e-10, maxiter=10_000, min_reg=1e-12, verbose=false)
 
-	y, ld = f(transform(x), context)
+Compute the discrete-time infinite-horizon LQR gain `K` for `(A,B,Q,R)` and
+synthesize a quadratic Lyapunov matrix `S` for the closed loop `Acl = A - B*K`
+by solving a semidefinite program (SDP) with Clarabel.
 
-	for _ in 1:n
-		x_pert = copy(x)
-		x_pert[i] += δ
+Lyapunov condition (discrete):
+    Acl' * S * Acl - S + Qℓ ≼ 0,   S ⪰ ε I,
+with objective `min trace(S)`.
 
-		y_pert, ld_pert = f(transform(x_pert), context)
+If `Qlyap` is not provided, we use the standard choice `Qℓ = Q + K' R K`.
 
-		A[:, i] = (y_pert - y)/δ
-		b[i] = -1*(ld_pert - ld)/δ  # -1 multiplication because maximize ld
+# Arguments
+- `A::AbstractMatrix` (n×n), `B::AbstractMatrix` (n×m)
+- `Q::AbstractMatrix` (n×n, symmetric, ⪰ 0), `R::AbstractMatrix` (m×m, symmetric, ⪰ 0)
+
+# Keywords
+- `ε`     : minimal eigenvalue margin for S (default 1e-8)
+- `Qlyap` : custom Qℓ in the Lyapunov inequality; defaults to `Q + K' R K`
+- `tol`/`maxiter`/`min_reg` : controls for internal Riccati iteration used to get K
+- `verbose`: print solver output
+
+# Returns
+- `K::Matrix{Float64}` : LQR gain (m×n)
+- `S::Matrix{Float64}` : Lyapunov matrix (n×n), SPD certificate for Acl
+- `info::NamedTuple`   : diagnostics (`riccati_iterations`, `riccati_converged`,
+                         `spectral_radius`, `sdp_status`, `trace_S`)
+"""
+function lqr_lyap(A::AbstractMatrix, B::AbstractMatrix, Q::AbstractMatrix, R::AbstractMatrix;
+                  ε::Real=1e-8, Qlyap=nothing, tol::Real=1e-10, maxiter::Integer=10_000,
+                  min_reg::Real=1e-12, verbose::Bool=false)
+    # --- dimensions & types
+    n, nA = size(A); nB, m = size(B)
+    @assert n == nA "A must be square (n×n)"
+    @assert nB == n "B must be n×m with same n as A"
+    @assert size(Q) == (n, n) "Q must be n×n"
+    @assert size(R) == (m, m) "R must be m×m"
+
+    As = Array{Float64}(A); Bs = Array{Float64}(B)
+    Qs = Symmetric(0.5 .* (Array{Float64}(Q) + Array{Float64}(Q)'))
+    Rs = Symmetric(0.5 .* (Array{Float64}(R) + Array{Float64}(R)'))
+
+    # --- Internal LQR gain via fixed-point DARE iteration (robust, no external deps)
+    function lqr_gain(As, Bs, Qs, Rs; tol=tol, maxiter=maxiter, min_reg=min_reg)
+        Rreg = Matrix(Rs); reg = 0.0
+        # ensure Rreg ≻ 0 for numerical stability
+        let reg_local = 0.0
+            for _ in 1:6
+                try
+                    cholesky(Hermitian(Rreg + reg_local*I)); reg = reg_local; break
+                catch; reg_local = max(10.0 * max(reg_local, float(min_reg)), float(min_reg)); end
+            end
+            Rreg += reg*I
+        end
+        P = Matrix(Qs); it = 0
+        while it < maxiter
+            it += 1
+            G = Symmetric(Rreg + Bs' * P * Bs)
+            rhs = Bs' * P * As
+            K = try cholesky(Hermitian(Matrix(G))) \ rhs catch; G \ rhs end
+            Pnext = Symmetric(0.5 .* ((Matrix(Qs) + As'*(P*As - P*Bs*K)) + (Matrix(Qs) + As'*(P*As - P*Bs*K))'))
+            if opnorm(Pnext - P, Inf) <= tol * (1 + opnorm(P, Inf))
+                P = Matrix(Pnext); break
+            end
+            P = Matrix(Pnext)
+        end
+        converged = it < maxiter
+        # final K with unregularized R if possible
+        Gfin = Symmetric(Matrix(Rs) + Bs' * P * Bs)
+        K = try cholesky(Hermitian(Matrix(Gfin))) \ (Bs' * P * As) catch; Gfin \ (Bs' * P * As) end
+        return K, it, converged
+    end
+
+    K, riters, rconv = lqr_gain(As, Bs, Qs, Rs)
+    Acl = As - Bs * K
+    Qℓ = Qlyap === nothing ? (Matrix(Qs) + K' * Matrix(Rs) * K) : Array{Float64}(Qlyap)
+
+    # --- SDP for Lyapunov matrix S with Clarabel
+    model = Model(Clarabel.Optimizer)
+    if !verbose
+        set_silent(model)
+    end
+
+    @variable(model, S[1:n, 1:n], PSD)    # S ⪰ 0 and symmetric
+
+    # Enforce S ⪰ ε I  ⇔  S - ε I ⪰ 0
+    I_n = Matrix{Float64}(I, n, n)
+    @constraint(model, S - ε * I_n in PSDCone())
+
+    # Lyapunov LMI:  Acl' S Acl - S + Qℓ ≼ 0  ⇔  S - Acl' S Acl - Qℓ ⪰ 0
+    @constraint(model, (S - Acl' * S * Acl - Qℓ) in PSDCone())
+
+    # Objective: minimize trace(S)
+    @objective(model, Min, sum(S[i,i] for i in 1:n))
+
+    optimize!(model)
+
+    status = termination_status(model)
+    Sval = value.(S)
+    ρ = maximum(abs.(eigvals(Acl)))
+
+    info = (riccati_iterations=riters,
+            riccati_converged=rconv,
+            spectral_radius=ρ,
+            sdp_status=status,
+            trace_S=sum(diag(Sval)))
+
+    return K, Sval, info
+end
+
+# -----------------------------------------------------------------------------
+# Example (uncomment to try):
+# using Random
+# Random.seed!(1)
+# A = [1.0 0.1; 0.0 1.0]
+# B = [0.0; 0.1]
+# Q = I(2)
+# R = reshape([0.01], 1, 1)
+# K, S, info = lqr_lyap(A,B,Q,R; ε=1e-6, verbose=false)
+# @show K, S, info
+# Acl = A - B*K; Qℓ = Q + K' * R * K
+# @show maximum(eigvals(Acl' * S * Acl - S + Qℓ))   # should be ≤ 0 (numerically ~ 0 or negative)
+# -----------------------------------------------------------------------------
+
+# ╔═╡ 68e143e5-fdca-4a68-963f-40f02609732b
+function gen_trajectory(ds::DiscreteRandomSystem, x0::AbstractVector, T::Integer, H::AbstractMatrix, d::AbstractVector = zeros(size(H, 1)); start_xmat::Union{Nothing, AbstractMatrix}=nothing, start_umat::Union{Nothing, AbstractMatrix} = nothing, lin_x::AbstractVector = x0)
+    # 1) Linearization (pick a nominal, here (x0, u_center))
+    A, B, c = linearize(ds, lin_x, ds.U.center)  # <-- was `x`
+
+    # 2) Model
+    opt = Model(HiGHS.Optimizer)
+	JuMP.set_silent(opt)
+
+    # 3) Dimensions and bounds
+    n = length(x0)
+    m = length(ds.U.center)
+    Xlo, Xhi = low(ds.X),  high(ds.X)   # vectors length n
+    Ulo, Uhi = low(ds.U),  high(ds.U)   # vectors length m
+
+    # 4) Decision variables
+	if start_xmat != nothing
+    	@variable(opt, Xlo[i] .<= x[i=1:n, j=1:(T+1)] .<= Xhi[i], start = start_xmat[i, j])
+	else
+		@variable(opt, Xlo[i] .<= x[i=1:n, j=1:(T+1)] .<= Xhi[i])
 	end
 
-	return A, b, y, ld
+	if start_umat != nothing
+    	@variable(opt, Ulo[i] .<= u[i=1:m, j=1:T]   .<= Uhi[i], start = start_umat[i, j])
+	else
+		@variable(opt, Ulo[i] .<= u[i=1:m, j=1:T]   .<= Uhi[i])	
+	end
+    @variable(opt, u_abs[1:m, 1:T] .>= 0)
+
+    # encode |u| via two linear inequalities: -u_abs <= u <= u_abs
+    @constraint(opt, u .<= u_abs)
+    @constraint(opt, -u_abs .<= u)
+
+    # 5) Dynamics x_{t+1} = A x_t + B u_t + c
+    # Broadcast c across columns 1..T
+    Cmat = repeat(c, 1, T)
+    @constraint(opt, A * x[:, 1:T] + B * u + Cmat .== x[:, 2:(T+1)])
+
+    # 6) Initial state
+    @constraint(opt, x[:, 1] .== x0)
+
+    # 7) Target at final time
+    @constraint(opt, H * x[:, T+1] .>= d)
+
+    # 8) Collision avoidance (axis-aligned rectangular disjunctions)
+    #    Front vehicle uses state indices (8,9); oncoming uses (11,12)
+    #    At each t, enforce: (x1-x8 <= -5) or (x1-x8 >= 5) or (x2-x9 <= -2) or (x2-x9 >= 2)
+    #    Same pattern w.r.t. (11,12).
+
+    # # Compute tight difference bounds from X bounds
+    Δx_min_f = Xlo[1] - Xhi[8];  Δx_max_f = Xhi[1] - Xlo[8]
+    Δy_min_f = Xlo[2] - Xhi[9];  Δy_max_f = Xhi[2] - Xlo[9]
+
+    Δx_min_o = Xlo[1] - Xhi[11]; Δx_max_o = Xhi[1] - Xlo[11]
+    Δy_min_o = Xlo[2] - Xhi[12]; Δy_max_o = Xhi[2] - Xlo[12]
+
+    # # Big-M values (front)
+    M1f = Δx_max_f + 5      # for x1-x8 <= -5 + M*(1-b)
+    M2f = 5 - Δx_min_f      # for x1-x8 >=  5 - M*(1-b)
+    M3f = Δy_max_f + 2      # for x2-x9 <= -2 + M*(1-b)
+    M4f = 2 - Δy_min_f      # for x2-x9 >=  2 - M*(1-b)
+
+    # # Big-M values (oncoming)
+    M1o = Δx_max_o + 5
+    M2o = 5 - Δx_min_o
+    M3o = Δy_max_o + 2
+    M4o = 2 - Δy_min_o
+
+    # # Front-vehicle binaries
+    @variable(opt, bf[1:4, 1:T+1], Bin)
+    @constraint(opt, [t=1:T+1], sum(bf[:, t]) >= 1)  # at least one active
+
+    @constraint(opt, [t=1:T+1], x[1,t] - x[8,t] <= -5 + M1f*(1 - bf[1,t]))
+    @constraint(opt, [t=1:T+1], x[1,t] - x[8,t] >=  5 - M2f*(1 - bf[2,t]))
+    @constraint(opt, [t=1:T+1], x[2,t] - x[9,t] <= -2 + M3f*(1 - bf[3,t]))
+    @constraint(opt, [t=1:T+1], x[2,t] - x[9,t] >=  2 - M4f*(1 - bf[4,t]))
+
+    # # Oncoming-vehicle binaries
+    @variable(opt, bo[1:4, 1:T+1], Bin)
+    @constraint(opt, [t=1:T+1], sum(bo[:, t]) >= 1)
+
+    @constraint(opt, [t=1:T+1], x[1,t] - x[11,t] <= -5 + M1o*(1 - bo[1,t]))
+    @constraint(opt, [t=1:T+1], x[1,t] - x[11,t] >=  5 - M2o*(1 - bo[2,t]))
+    @constraint(opt, [t=1:T+1], x[2,t] - x[12,t] <= -2 + M3o*(1 - bo[3,t]))
+    @constraint(opt, [t=1:T+1], x[2,t] - x[12,t] >=  2 - M4o*(1 - bo[4,t]))
+
+    # 9) Objective: keep inputs small (L1)
+    @objective(opt, Min, sum(u_abs))
+	# @objective(opt, Max, sum(H * x[:, T+1]))
+
+    @time optimize!(opt)
+
+    return is_solved_and_feasible(opt), value.(x), value.(u)
 end
 
-# ╔═╡ 8c972af1-eb82-44fa-a28b-ad36e6c11644
-begin
+# ╔═╡ 871f4a19-ea87-4f59-b1b9-d8321b7852e8
+function track_input(ds::DiscreteRandomSystem, x::AbstractVector, H::AbstractMatrix, target::AbstractVector, S::AbstractMatrix; u0::AbstractVector=ds.U.center, algo=:LN_COBYLA)
+	# define objective
+	function objfun(u::AbstractVector, grad::Union{Nothing, AbstractVector} = nothing)
+		err = H*(ds(x, u) - target)
+		err'*S*err
+	end
 
-function search_optimum(f::Flow, context::AbstractVector, transform::Function, x::AbstractVector, r::Real; δ=0.001)
-	A, b, y, ld = quadratic_coeffs(f, transform, context, x0)
+	opt = NLopt.Opt(algo, 2)
+	NLopt.lower_bounds!(opt, low(ds.U))
+	NLopt.upper_bounds!(opt, high(ds.U))
 
-	# objective: 0.5||Aϵ+y||^2 + bϵ + r||ϵ||^2
-	H = Symmetric(A' * A + (2r) * I)      # n×n
-	g = A' * y + b                # b is 1×n (row)
-	ε = -H\g
+	NLopt.min_objective!(opt, objfun)
 
-	x_star = x + ϵ
+	min_x, min_f, ret = NLopt.optimize(opt, u0)
 
-	y_star, ld_star = f(transform(x_star), context)
-
-	α = ld - 0.5*norm(y)^2
-	β = ld_star - 0.5*norm(y_star)^2
-
-	return x_star, α, β
+	return min_x, min_f, objfun(u0), ret
 end
 
-function search_optimum(f::Flow, context::AbstractVector, transform::Function, x::AbstractVector, r_init::Real=0; δ=0.001, maxreg::Real = 10, maxiter = 1000)
-	r = r_init
+# ╔═╡ 7674c735-b41f-4d6d-80f0-0b0bab237767
+function mpc(ds::DiscreteRandomSystem, x0::AbstractVector, T::Integer, H::AbstractMatrix, d::AbstractVector = zeros(size(H, 1)); ds_sub::DiscreteRandomSystem = ds, T_sub::Integer=T)
+	xmat = x0
+	umat = Matrix(undef, length(ds.U.center), 0)
 
-	xup = x
+	xnew = copy(x0)
 
-	iter = 0
-	while r < maxreg && iter < maxiter
-		x_star, α, β = search_optimum(f, context, transform, x, r, δ=δ)
-		if β>α
-			xup = x_star
-			r /= 2
-		else
-			r *= 2
+	for _ in 1:T_sub
+		feasible, _, umat_pred = gen_trajectory(ds, xnew, T, H, lin_x=x0)
+		if !feasible
+			return xmat, umat
 		end
+		xnew = ds_sub(xnew, umat_pred[:, 1])
+		xmat = hcat(xmat, copy(xnew))
+		umat = hcat(umat, copy(umat_pred[:, 1]))
 	end
 
-	return xup
-end
-
-
+	return xmat, umat
 end
 
 # ╔═╡ 7b3216d8-787e-4654-9827-7f303e42abff
 let
+	Random.seed!(0)
+	
+	context_dim = 13
+	sample_dim = 13*4
+	num_blocks = 3
+
+
+	proj1 = [1 zeros(1, 6) -1 zeros(1, 5)]
+	proj2 = [0 -1 zeros(1, 11)]
+	proj3 = [0 1 zeros(1, 11)]
+	proj = vcat(proj1, proj2, proj3)
+
+	d = [0.0, -1.5, -1.5]
+	
+
 	ds = discrete_vehicles(0.25)
+	x0 = copy(ds.X.center)
+	x0[1] = 10.0
+	x0[2] = 1.7
+	x0[8] = 30
+	x0[11] = 90
 
-	x = ds.X.center
+	ds_sub = discrete_vehicles(0.01)
 
-	linearize(ds, x)
+	A, B, c = linearize(ds, x0, ds.U.center)
+
+	Q = Matrix(1.0I, 7, 7)
+	R = Matrix(1.0I, 2, 2)
+
+	K, S, _ = lqr_lyap(A[1:7, 1:7], B[1:7, :], Q, R)
+
+	
+
+	T = 40
+	# opt, xmat, umat = gen_trajectory(ds, x0, T, proj, d)
+
+	# xmat
+
+	# @time track_input(ds, xmat[:,1], Matrix(1.0I, 7, 13), xmat[:, 2], S; u0=umat[:,1], algo=:LN_NELDERMEAD)
 end
 
 # ╔═╡ Cell order:
 # ╠═fc3c2db6-7193-11f0-1b65-7f390e18200d
 # ╠═c8d1f042-ad49-4971-aa32-b9c15d241da6
+# ╠═b08a9444-65f3-45fa-825a-94ce96bef202
 # ╠═c6105657-7697-462a-84f0-5b6cb0ffb4b1
 # ╠═87dc46a4-8f00-473a-9e37-817fc91e7ffe
 # ╠═48f1de66-e038-42db-8044-b5f83c86eacf
 # ╠═3ec5c7b7-cae2-45a8-83ce-2c77993ae9fe
 # ╠═73693311-fab8-4ff7-8c11-1814c5873283
 # ╠═52218b79-4396-45f6-a06d-c0e8e30e7cb0
-# ╠═687648fc-2d2f-4cd4-9ff7-d0524615d70c
 # ╠═77293f6a-0141-4fa0-81da-5a74e35b2537
-# ╠═c03edf5d-2bf1-42c2-b4e8-8c107f535389
-# ╠═8c972af1-eb82-44fa-a28b-ad36e6c11644
+# ╠═7bc0465a-d505-4f6f-8dd5-cf614c36ebd4
+# ╠═68e143e5-fdca-4a68-963f-40f02609732b
+# ╠═871f4a19-ea87-4f59-b1b9-d8321b7852e8
+# ╠═7674c735-b41f-4d6d-80f0-0b0bab237767
 # ╠═7b3216d8-787e-4654-9827-7f303e42abff
-# ╠═d7cb02f0-06b3-4e8e-85b0-302a0c3f7ca0

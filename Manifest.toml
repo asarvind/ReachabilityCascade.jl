@@ -2,7 +2,7 @@
 
 julia_version = "1.11.3"
 manifest_format = "2.0"
-project_hash = "54a0e82bc1affdfcc5639948f798a922762a5baa"
+project_hash = "adb5262b7113c25a29aafb79855c87bd80edc072"
 
 [[deps.AMD]]
 deps = ["LinearAlgebra", "SparseArrays", "SuiteSparse_jll"]
@@ -1225,6 +1225,12 @@ deps = ["Artifacts", "Cairo_jll", "Fontconfig_jll", "FreeType2_jll", "FriBidi_jl
 git-tree-sha1 = "275a9a6d85dc86c24d03d1837a0010226a96f540"
 uuid = "36c8627f-9965-5494-a995-c6b170f724f3"
 version = "1.56.3+0"
+
+[[deps.ParametricOptInterface]]
+deps = ["MathOptInterface"]
+git-tree-sha1 = "215201d5dbdd9f6d55d22dc698a6ec4c23091890"
+uuid = "0ce4ce61-57bf-432b-a095-efac525d185e"
+version = "0.11.1"
 
 [[deps.Parsers]]
 deps = ["Dates", "PrecompileTools", "UUIDs"]

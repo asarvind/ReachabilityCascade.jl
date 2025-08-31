@@ -20,10 +20,7 @@ Pkg.activate("SymlinkReachabilityCascade")
 end
 
 # ╔═╡ c8d1f042-ad49-4971-aa32-b9c15d241da6
-using ReachabilityCascade, LinearAlgebra, Random, LazySets, Flux, Statistics, JuMP, OSQP, SparseArrays, HiGHS, Clarabel
-
-# ╔═╡ b08a9444-65f3-45fa-825a-94ce96bef202
-import NLopt
+using ReachabilityCascade, LinearAlgebra, Random, LazySets, Flux, Statistics, JuMP, SparseArrays, StaticArrays, HiGHS, Clarabel, JLD2
 
 # ╔═╡ c6105657-7697-462a-84f0-5b6cb0ffb4b1
 import ReachabilityCascade.CarDynamics as CD
@@ -31,8 +28,8 @@ import ReachabilityCascade.CarDynamics as CD
 # ╔═╡ 87dc46a4-8f00-473a-9e37-817fc91e7ffe
 function discrete_car(t::Real)
 	X = Hyperrectangle(
-		vcat([50, 3.5, 0.0, 10.0], zeros(3)),
-		[100, 3.5, 1.0, 10.0, 1.0, 1.0, 0.2]
+		vcat([50, 4.0, 0.0, 10.0], zeros(3)),
+		[100, 3.0, 1.0, 10.0, 1.0, 1.0, 0.2]
 	)
 
 	U = Hyperrectangle(
@@ -54,8 +51,8 @@ end
 function discrete_vehicles(t::Real)
 
 	X = Hyperrectangle(
-		vcat([50, 3.5, 0.0, 10.0], zeros(3), 50.0, 1.75, 5.0, 50.0, 5.25, -10.0),
-		[100, 3.5, 1.0, 10.0, 1.0, 1.0, 0.2, 100.0, 0.1, 1.0, 100.0, 0.1, 1.0]
+		vcat([50, 4.0, 0.0, 10.0], zeros(3), 50.0, 1.75, 5.0, 50.0, 6.0, -5.0),
+		[100, 3.0, 1.0, 10.0, 1.0, 1.0, 0.2, 100.0, 0.1, 1.0, 100.0, 0.1, 1.0]
 	)	
 
 	V = Hyperrectangle(
@@ -78,195 +75,6 @@ function discrete_vehicles(t::Real)
 	return DiscreteRandomSystem(X, V, vehicle_transition)
 
 end
-
-# ╔═╡ 3ec5c7b7-cae2-45a8-83ce-2c77993ae9fe
-function safety_fn(x::AbstractVector)
-	safety_distance = 2.5
-
-	ds = discrete_car(0.25)
-
-	fol_dist = norm(x[1:2] - x[8:9]) - safety_distance
-	on_dist = norm(x[1:2] - x[11:12]) - safety_distance
-
-	constraint_dist = 1.0 .- abs.(x[1:7] .- ds.X.center) ./ (ds.X.radius .+ 1e-8)
-
-	return vcat(fol_dist, on_dist, constraint_dist)
-end
-
-# ╔═╡ 73693311-fab8-4ff7-8c11-1814c5873283
-function target_fn(x::AbstractVector)
-	return [x[1] - x[8]]
-end
-
-# ╔═╡ 52218b79-4396-45f6-a06d-c0e8e30e7cb0
-function intertarget_fn(x::AbstractVector)
-	return x[1:7]
-end
-
-# ╔═╡ 77293f6a-0141-4fa0-81da-5a74e35b2537
-function linearize(ds::DiscreteRandomSystem, x::AbstractVector, u::AbstractVector=ds.U.center; δ=0.001)
-	n = size(x, 1)
-	m = size(u, 1)
-
-	A = ones(n, n)
-	B = ones(n, m)
-
-	p = ds(x, u)
-
-	for i in 1:n
-		x_pert = copy(x)
-		x_pert[i] += δ
-		A[:, i] = (ds(x_pert, u) - p)/δ		
-	end
-
-	for i in 1:m
-		u_pert = copy(u)
-		u_pert[i] += δ
-		B[:, i] = (ds(x, u_pert) - p)/δ
-	end
-
-	c = p - A*x - B*u 
-
-	return A, B, c
-end
-
-# ╔═╡ 7bc0465a-d505-4f6f-8dd5-cf614c36ebd4
-# Discrete-time LQR + Lyapunov SDP using Clarabel
-# Single-call API: lqr_lyap(A,B,Q,R) -> (K, S, info)
-# - Computes infinite-horizon discrete LQR gain K for (A,B,Q,R)
-# - Synthesizes a *quadratic Lyapunov matrix* S ≻ 0 for Acl = A - B*K via an SDP
-#   using Clarabel with true semidefinite constraints.
-#
-# Lyapunov SDP (discrete-time): find S ≻ 0 s.t.
-#   Acl' S Acl - S + Qℓ ≼ 0   ⇔   S - Acl' S Acl - Qℓ ⪰ 0
-# We also impose S ⪰ ε I for numerical robustness.
-# Objective: minimize trace(S) (well-conditioned smallest certificate).
-#
-
-"""
-    lqr_lyap(A, B, Q, R; ε=1e-8, Qlyap=nothing, tol=1e-10, maxiter=10_000, min_reg=1e-12, verbose=false)
-
-Compute the discrete-time infinite-horizon LQR gain `K` for `(A,B,Q,R)` and
-synthesize a quadratic Lyapunov matrix `S` for the closed loop `Acl = A - B*K`
-by solving a semidefinite program (SDP) with Clarabel.
-
-Lyapunov condition (discrete):
-    Acl' * S * Acl - S + Qℓ ≼ 0,   S ⪰ ε I,
-with objective `min trace(S)`.
-
-If `Qlyap` is not provided, we use the standard choice `Qℓ = Q + K' R K`.
-
-# Arguments
-- `A::AbstractMatrix` (n×n), `B::AbstractMatrix` (n×m)
-- `Q::AbstractMatrix` (n×n, symmetric, ⪰ 0), `R::AbstractMatrix` (m×m, symmetric, ⪰ 0)
-
-# Keywords
-- `ε`     : minimal eigenvalue margin for S (default 1e-8)
-- `Qlyap` : custom Qℓ in the Lyapunov inequality; defaults to `Q + K' R K`
-- `tol`/`maxiter`/`min_reg` : controls for internal Riccati iteration used to get K
-- `verbose`: print solver output
-
-# Returns
-- `K::Matrix{Float64}` : LQR gain (m×n)
-- `S::Matrix{Float64}` : Lyapunov matrix (n×n), SPD certificate for Acl
-- `info::NamedTuple`   : diagnostics (`riccati_iterations`, `riccati_converged`,
-                         `spectral_radius`, `sdp_status`, `trace_S`)
-"""
-function lqr_lyap(A::AbstractMatrix, B::AbstractMatrix, Q::AbstractMatrix, R::AbstractMatrix;
-                  ε::Real=1e-8, Qlyap=nothing, tol::Real=1e-10, maxiter::Integer=10_000,
-                  min_reg::Real=1e-12, verbose::Bool=false)
-    # --- dimensions & types
-    n, nA = size(A); nB, m = size(B)
-    @assert n == nA "A must be square (n×n)"
-    @assert nB == n "B must be n×m with same n as A"
-    @assert size(Q) == (n, n) "Q must be n×n"
-    @assert size(R) == (m, m) "R must be m×m"
-
-    As = Array{Float64}(A); Bs = Array{Float64}(B)
-    Qs = Symmetric(0.5 .* (Array{Float64}(Q) + Array{Float64}(Q)'))
-    Rs = Symmetric(0.5 .* (Array{Float64}(R) + Array{Float64}(R)'))
-
-    # --- Internal LQR gain via fixed-point DARE iteration (robust, no external deps)
-    function lqr_gain(As, Bs, Qs, Rs; tol=tol, maxiter=maxiter, min_reg=min_reg)
-        Rreg = Matrix(Rs); reg = 0.0
-        # ensure Rreg ≻ 0 for numerical stability
-        let reg_local = 0.0
-            for _ in 1:6
-                try
-                    cholesky(Hermitian(Rreg + reg_local*I)); reg = reg_local; break
-                catch; reg_local = max(10.0 * max(reg_local, float(min_reg)), float(min_reg)); end
-            end
-            Rreg += reg*I
-        end
-        P = Matrix(Qs); it = 0
-        while it < maxiter
-            it += 1
-            G = Symmetric(Rreg + Bs' * P * Bs)
-            rhs = Bs' * P * As
-            K = try cholesky(Hermitian(Matrix(G))) \ rhs catch; G \ rhs end
-            Pnext = Symmetric(0.5 .* ((Matrix(Qs) + As'*(P*As - P*Bs*K)) + (Matrix(Qs) + As'*(P*As - P*Bs*K))'))
-            if opnorm(Pnext - P, Inf) <= tol * (1 + opnorm(P, Inf))
-                P = Matrix(Pnext); break
-            end
-            P = Matrix(Pnext)
-        end
-        converged = it < maxiter
-        # final K with unregularized R if possible
-        Gfin = Symmetric(Matrix(Rs) + Bs' * P * Bs)
-        K = try cholesky(Hermitian(Matrix(Gfin))) \ (Bs' * P * As) catch; Gfin \ (Bs' * P * As) end
-        return K, it, converged
-    end
-
-    K, riters, rconv = lqr_gain(As, Bs, Qs, Rs)
-    Acl = As - Bs * K
-    Qℓ = Qlyap === nothing ? (Matrix(Qs) + K' * Matrix(Rs) * K) : Array{Float64}(Qlyap)
-
-    # --- SDP for Lyapunov matrix S with Clarabel
-    model = Model(Clarabel.Optimizer)
-    if !verbose
-        set_silent(model)
-    end
-
-    @variable(model, S[1:n, 1:n], PSD)    # S ⪰ 0 and symmetric
-
-    # Enforce S ⪰ ε I  ⇔  S - ε I ⪰ 0
-    I_n = Matrix{Float64}(I, n, n)
-    @constraint(model, S - ε * I_n in PSDCone())
-
-    # Lyapunov LMI:  Acl' S Acl - S + Qℓ ≼ 0  ⇔  S - Acl' S Acl - Qℓ ⪰ 0
-    @constraint(model, (S - Acl' * S * Acl - Qℓ) in PSDCone())
-
-    # Objective: minimize trace(S)
-    @objective(model, Min, sum(S[i,i] for i in 1:n))
-
-    optimize!(model)
-
-    status = termination_status(model)
-    Sval = value.(S)
-    ρ = maximum(abs.(eigvals(Acl)))
-
-    info = (riccati_iterations=riters,
-            riccati_converged=rconv,
-            spectral_radius=ρ,
-            sdp_status=status,
-            trace_S=sum(diag(Sval)))
-
-    return K, Sval, info
-end
-
-# -----------------------------------------------------------------------------
-# Example (uncomment to try):
-# using Random
-# Random.seed!(1)
-# A = [1.0 0.1; 0.0 1.0]
-# B = [0.0; 0.1]
-# Q = I(2)
-# R = reshape([0.01], 1, 1)
-# K, S, info = lqr_lyap(A,B,Q,R; ε=1e-6, verbose=false)
-# @show K, S, info
-# Acl = A - B*K; Qℓ = Q + K' * R * K
-# @show maximum(eigvals(Acl' * S * Acl - S + Qℓ))   # should be ≤ 0 (numerically ~ 0 or negative)
-# -----------------------------------------------------------------------------
 
 # ╔═╡ 68e143e5-fdca-4a68-963f-40f02609732b
 function gen_trajectory(ds::DiscreteRandomSystem, x0::AbstractVector, T::Integer, H::AbstractMatrix, d::AbstractVector = zeros(size(H, 1)); start_xmat::Union{Nothing, AbstractMatrix}=nothing, start_umat::Union{Nothing, AbstractMatrix} = nothing, lin_x::AbstractVector = x0)
@@ -307,10 +115,10 @@ function gen_trajectory(ds::DiscreteRandomSystem, x0::AbstractVector, T::Integer
     @constraint(opt, A * x[:, 1:T] + B * u + Cmat .== x[:, 2:(T+1)])
 
     # 6) Initial state
-    @constraint(opt, x[:, 1] .== x0)
+    init_constraint = @constraint(opt, x[:, 1] .== x0)
 
     # 7) Target at final time
-    @constraint(opt, H * x[:, T+1] .>= d)
+	target_con = @constraint(opt, [i=1:size(H,1)], H[i, :]' * x[:, T+1] >= d[i])	
 
     # 8) Collision avoidance (axis-aligned rectangular disjunctions)
     #    Front vehicle uses state indices (8,9); oncoming uses (11,12)
@@ -324,140 +132,290 @@ function gen_trajectory(ds::DiscreteRandomSystem, x0::AbstractVector, T::Integer
     Δx_min_o = Xlo[1] - Xhi[11]; Δx_max_o = Xhi[1] - Xlo[11]
     Δy_min_o = Xlo[2] - Xhi[12]; Δy_max_o = Xhi[2] - Xlo[12]
 
+	# safety distances
+	a = 5.0
+	b = 3.0
+
     # # Big-M values (front)
-    M1f = Δx_max_f + 5      # for x1-x8 <= -5 + M*(1-b)
-    M2f = 5 - Δx_min_f      # for x1-x8 >=  5 - M*(1-b)
-    M3f = Δy_max_f + 2      # for x2-x9 <= -2 + M*(1-b)
-    M4f = 2 - Δy_min_f      # for x2-x9 >=  2 - M*(1-b)
+    M1f = Δx_max_f + a      # for x1-x8 <= -5 + M*(1-b)
+    M2f = a - Δx_min_f      # for x1-x8 >=  5 - M*(1-b)
+    M3f = Δy_max_f + b      # for x2-x9 <= -2 + M*(1-b)
+    M4f = b - Δy_min_f      # for x2-x9 >=  2 - M*(1-b)
 
     # # Big-M values (oncoming)
-    M1o = Δx_max_o + 5
-    M2o = 5 - Δx_min_o
-    M3o = Δy_max_o + 2
-    M4o = 2 - Δy_min_o
+    M1o = Δx_max_o + a
+    M2o = a - Δx_min_o
+    M3o = Δy_max_o + b
+    M4o = b - Δy_min_o
 
     # # Front-vehicle binaries
-    @variable(opt, bf[1:4, 1:T+1], Bin)
+    @variable(opt, bf[1:3, 1:T+1], Bin)
     @constraint(opt, [t=1:T+1], sum(bf[:, t]) >= 1)  # at least one active
 
-    @constraint(opt, [t=1:T+1], x[1,t] - x[8,t] <= -5 + M1f*(1 - bf[1,t]))
-    @constraint(opt, [t=1:T+1], x[1,t] - x[8,t] >=  5 - M2f*(1 - bf[2,t]))
-    @constraint(opt, [t=1:T+1], x[2,t] - x[9,t] <= -2 + M3f*(1 - bf[3,t]))
-    @constraint(opt, [t=1:T+1], x[2,t] - x[9,t] >=  2 - M4f*(1 - bf[4,t]))
+    @constraint(opt, [t=1:T+1], x[1,t] - x[8,t] <= -a + M1f*(1 - bf[1,t]))
+    @constraint(opt, [t=1:T+1], x[1,t] - x[8,t] >=  a - M2f*(1 - bf[2,t]))
+    # @constraint(opt, [t=1:T+1], x[2,t] - x[9,t] <= -b + M3f*(1 - bf[3,t]))
+    @constraint(opt, [t=1:T+1], x[2,t] - x[9,t] >=  b - M4f*(1 - bf[3,t]))
 
     # # Oncoming-vehicle binaries
-    @variable(opt, bo[1:4, 1:T+1], Bin)
+    @variable(opt, bo[1:3, 1:T+1], Bin)
     @constraint(opt, [t=1:T+1], sum(bo[:, t]) >= 1)
 
-    @constraint(opt, [t=1:T+1], x[1,t] - x[11,t] <= -5 + M1o*(1 - bo[1,t]))
-    @constraint(opt, [t=1:T+1], x[1,t] - x[11,t] >=  5 - M2o*(1 - bo[2,t]))
-    @constraint(opt, [t=1:T+1], x[2,t] - x[12,t] <= -2 + M3o*(1 - bo[3,t]))
-    @constraint(opt, [t=1:T+1], x[2,t] - x[12,t] >=  2 - M4o*(1 - bo[4,t]))
+    @constraint(opt, [t=1:T+1], x[1,t] - x[11,t] <= -a + M1o*(1 - bo[1,t]))
+    @constraint(opt, [t=1:T+1], x[1,t] - x[11,t] >=  a - M2o*(1 - bo[2,t]))
+    @constraint(opt, [t=1:T+1], x[2,t] - x[12,t] <= -b + M3o*(1 - bo[3,t]))
+    # @constraint(opt, [t=1:T+1], x[2,t] - x[12,t] >=  b - M4o*(1 - bo[4,t]))
 
-    # 9) Objective: keep inputs small (L1)
-    @objective(opt, Min, sum(u_abs))
-	# @objective(opt, Max, sum(H * x[:, T+1]))
+    # 9) Objective:
+	@variable(opt, ϵ[1:(T+1)] .>= 0)
+	@constraint(opt, [t = 1:(T+1)], x[2, t] - 1.5 <= ϵ[t] )
+	@constraint(opt, [t = 1:(T+1)], x[2, t] - 1.5 >= -ϵ[t] )
+	@objective(opt, Min, sum(ϵ) + sum(u_abs))
 
-    @time optimize!(opt)
+    optimize!(opt)
 
-    return is_solved_and_feasible(opt), value.(x), value.(u)
-end
-
-# ╔═╡ 871f4a19-ea87-4f59-b1b9-d8321b7852e8
-function track_input(ds::DiscreteRandomSystem, x::AbstractVector, H::AbstractMatrix, target::AbstractVector, S::AbstractMatrix; u0::AbstractVector=ds.U.center, algo=:LN_COBYLA)
-	# define objective
-	function objfun(u::AbstractVector, grad::Union{Nothing, AbstractVector} = nothing)
-		err = H*(ds(x, u) - target)
-		err'*S*err
+	if !is_solved_and_feasible(opt)
+		return nothing, false
 	end
 
-	opt = NLopt.Opt(algo, 2)
-	NLopt.lower_bounds!(opt, low(ds.U))
-	NLopt.upper_bounds!(opt, high(ds.U))
+	umat = value.(u)
 
-	NLopt.min_objective!(opt, objfun)
+	xmat = value.(x)
 
-	min_x, min_f, ret = NLopt.optimize(opt, u0)
+	Q = Matrix(1.0I, length(center(ds.X)), length(center(ds.X)))
+	R = Matrix(1.0I, length(center(ds.U)), length(center(ds.U)))
 
-	return min_x, min_f, objfun(u0), ret
+	K, S, _ = lqr_lyap(A, B, Q, R)
+
+	x_curr = copy(x0)
+
+	strj = copy(xmat)
+	utrj = copy(umat)
+
+	strj, utrj = correct_trajectory(ds, xmat, umat)
+
+	Hobs = [
+		1 zeros(1, 6) -1 zeros(1, 5);
+		-1 zeros(1, 6) 1 zeros(1, 5);
+		0 1 zeros(1, 6) -1 zeros(1, 4);
+		0 -1 zeros(1, 6) 1 zeros(1, 4);
+		1 zeros(1, 9) -1 zeros(1, 2);
+		-1 zeros(1, 9) 1 zeros(1, 2);
+		0 1 zeros(1, 9) -1 0;
+		0 -1 zeros(1, 9) 1 0;
+	]
+
+	# collision avoidance with vehicles LHS
+	q = [5.0, 5.0, 2.0, 2.0, 5.0, 5.0, 2.0, 2.0]
+	margins = Hobs*strj .- q
+	_, for_inds = findmax(margins[1:4, :], dims=1)
+	_, on_inds = findmax(margins[5:8, :], dims=1)
+	on_inds = [CartesianIndex(ind[1]+4, ind[2]) for ind in on_inds]
+
+	# RHS of obstacle constraint
+	dobs = fill(-1e7, 8, (T+1))
+	for inds in vcat(for_inds, on_inds)
+		dobs[inds] = q[inds[1]]
+ 	end
+
+	# static bounds
+	static_margin = minimum(radius_hyperrectangle(ds.X) .- abs.(strj .- center(ds.X)), dims=1)
+
+	return ( state_trajectory = strj, input_signal=utrj, obs_matrix=Hobs, obs_bounds=dobs, target_matrix=H, target_bounds=d, opt=opt, state_ref=x, input_ref=u, target_constraint=target_con, robustness=min(minimum(static_margin), minimum(Hobs*strj - dobs)) , init_constraint=init_constraint, bf_ref=bf, bo_ref=bo, bf_val=value.(bf), bo_val=value.(bo)), true
 end
 
-# ╔═╡ 7674c735-b41f-4d6d-80f0-0b0bab237767
-function mpc(ds::DiscreteRandomSystem, x0::AbstractVector, T::Integer, H::AbstractMatrix, d::AbstractVector = zeros(size(H, 1)); ds_sub::DiscreteRandomSystem = ds, T_sub::Integer=T)
-	xmat = x0
-	umat = Matrix(undef, length(ds.U.center), 0)
+# ╔═╡ 2ff3f387-c91b-4b77-927d-cc40de737a27
+function regen_trajectory(ds::DiscreteRandomSystem, prev_res::NamedTuple, x0::AbstractVector, d::AbstractVector; fix_bools::Bool=true)
+	res = deepcopy(prev_res)
+	
+	# change target constraint
+	set_normalized_rhs.(res.target_constraint, d)
 
-	xnew = copy(x0)
+	# change initial state constraint
+	set_normalized_rhs.(res.init_constraint, x0)
 
-	for _ in 1:T_sub
-		feasible, _, umat_pred = gen_trajectory(ds, xnew, T, H, lin_x=x0)
-		if !feasible
-			return xmat, umat
+	# fix binary variables
+	if fix_bools
+		fix.(res.bf_ref, res.bf_val)
+		fix.(res.bo_ref, res.bo_val)
+	else
+		if prod(is_fixed.(res.bf_ref))
+			unfix.(res.bf_ref)
 		end
-		xnew = ds_sub(xnew, umat_pred[:, 1])
-		xmat = hcat(xmat, copy(xnew))
-		umat = hcat(umat, copy(umat_pred[:, 1]))
+		if prod(is_fixed.(res.bo_ref))
+			unfix.(res.bo_ref)
+		end
 	end
 
-	return xmat, umat
+	# optimize
+	optimize!(res.opt)
+
+	if !is_solved_and_feasible(res.opt)
+		return prev_res, false
+	end
+
+	# compute trajectory
+	strj, utrj = correct_trajectory(ds, value.(res.state_ref), value.(res.input_ref))
+
+	T = size(utrj, 2)
+
+	# collision avoidance with vehicles LHS
+	Hobs = res.obs_matrix
+	q = [5.0, 5.0, 2.0, 2.0, 5.0, 5.0, 2.0, 2.0]
+	margins = Hobs*strj .- q
+	_, for_inds = findmax(margins[1:4, :], dims=1)
+	_, on_inds = findmax(margins[5:8, :], dims=1)
+	on_inds = [CartesianIndex(ind[1]+4, ind[2]) for ind in on_inds]
+
+	# RHS of obstacle constraint
+	dobs = fill(-1e7, 8, (T+1))
+	for inds in vcat(for_inds, on_inds)
+		dobs[inds] = q[inds[1]]
+ 	end
+
+
+	# static bounds
+	static_margin = minimum(radius_hyperrectangle(ds.X) .- abs.(strj .- center(ds.X)), dims=1)
+
+	res = (
+	state_trajectory = strj, 
+	input_signal=utrj, 
+	obs_matrix=res.obs_matrix, 
+	obs_bounds=dobs, 
+	target_matrix = res.target_matrix,
+	target_bounds = d,
+	opt=res.opt, 
+	state_ref=res.state_ref, 
+	input_ref=res.input_ref, 
+	target_constraint=res.target_constraint, 
+	robustness=min(minimum(static_margin), minimum(Hobs*strj - dobs)), init_constraint=res.init_constraint,
+	bf_ref=res.bf_ref,
+	bo_ref=res.bo_ref,
+	bf_val = value.(res.bf_ref),
+	bo_val = value.(res.bo_ref),
+	)
+
+	return res, true
+end
+
+# ╔═╡ 85b13f02-e662-43f3-99ec-12db657b472c
+function generate_data(ds::DiscreteRandomSystem, samples::AbstractVector, margin::AbstractVector{<:Real}, T::Integer; start_index::Integer = 1, last_index::Integer=length(samples), savefile::String="", data::AbstractVector=[])
+	state_dim = length(LazySets.center(ds.X))
+	input_dim = length(LazySets.center(ds.U))
+
+	proj = vcat(Matrix(1.0I, state_dim, state_dim), Matrix(-1.0I, state_dim, state_dim))
+
+	start_time = time()
+	index = start_index
+
+	for s in @view samples[start_index:last_index]
+		if s[1] > s[14]
+			continue
+		end
+		x0 = s[1:state_dim]
+		d = proj*s[(state_dim+1):end] - abs.(proj)*margin
+
+		res, status = gen_trajectory(ds, x0, T, proj, d)
+
+		if status
+			if res.robustness >=0
+				push!(data, (state_trajectory=res.state_trajectory, input_signal=res.input_signal, index=index))
+			end
+		end
+
+		if time() - start_time > 60 && !isempty(savefile)
+			JLD2.save(savefile, Dict(
+					"samples" => samples,
+					"data" => data,
+				)
+			)
+		end
+
+		index += 1
+	end
+
+	if !isempty(savefile)
+		JLD2.save(savefile, Dict(
+				"samples" => samples,
+				"data" => data,
+			)
+		)
+	end
+
+	return data
 end
 
 # ╔═╡ 7b3216d8-787e-4654-9827-7f303e42abff
-let
-	Random.seed!(0)
+let 
+	Random.seed!(5)
 	
 	context_dim = 13
 	sample_dim = 13*4
 	num_blocks = 3
 
 
-	proj1 = [1 zeros(1, 6) -1 zeros(1, 5)]
-	proj2 = [0 -1 zeros(1, 11)]
-	proj3 = [0 1 zeros(1, 11)]
-	proj = vcat(proj1, proj2, proj3)
+	proj = [1 zeros(1, 6) -1 zeros(1, 5)]
 
-	d = [0.0, -1.5, -1.5]
+	d_gen = [0.0]
 	
 
 	ds = discrete_vehicles(0.25)
 	x0 = copy(ds.X.center)
 	x0[1] = 10.0
-	x0[2] = 1.7
+	x0[2] = 1.5
 	x0[8] = 30
 	x0[11] = 90
 
 	ds_sub = discrete_vehicles(0.01)
 
-	A, B, c = linearize(ds, x0, ds.U.center)
+	L = linearize(ds, x0, ds.U.center)
 
-	Q = Matrix(1.0I, 7, 7)
-	R = Matrix(1.0I, 2, 2)
+	# Q = Matrix(1.0I, 7, 7)
+	# R = Matrix(1.0I, 2, 2)
 
-	K, S, _ = lqr_lyap(A[1:7, 1:7], B[1:7, :], Q, R)
+	# K, S, _ = lqr_lyap(A[1:7, 1:7], B[1:7, :], Q, R)
 
 	
 
-	T = 40
-	# opt, xmat, umat = gen_trajectory(ds, x0, T, proj, d)
+	T = 28
+	lb = repeat(low(ds.X), 2)
+	ub = repeat(high(ds.X), 2)
+	lb[[1, 14]] .= 0.0
+	ub[[1, 14]] .= 90.0
+	lb[[4, 17]] .= 5.0
+	ub[[4, 17]] .= 15.0
+	lb[8] = 30.0
+	ub[8] = 30.0
+	lb[11] = 90.0
+	ub[11] = 90.0
+	rect_serp = Hyperrectangle(low=lb, high=ub)
+	grid_dims = [1, 2, 4, 14, 15]
+	step = [5.0, 1.0, 2.0, 5.0, 1.0]
 
-	# xmat
+	samples = grid_serpentine(rect_serp, step, dims=grid_dims)
 
-	# @time track_input(ds, xmat[:,1], Matrix(1.0I, 7, 13), xmat[:, 2], S; u0=umat[:,1], algo=:LN_NELDERMEAD)
+	margin = vcat(1.0, 0.5, fill(1e7, 11))
+	
+	# res, status = gen_trajectory(ds, x0, T, proj, d_gen)
+
+	# generate_data(ds, samples, margin, T, last_index=100, savefile="data/car/test.jld2")
+
+	data_dict = JLD2.load("data/car/test.jld2")
+
+	old_data = data_dict["data"]
+
+	generate_data(ds, samples, margin, T, data=old_data, start_index=old_data[end].index+1, last_index=300, savefile="data/car/test.jld2")
+
+	
 end
 
 # ╔═╡ Cell order:
 # ╠═fc3c2db6-7193-11f0-1b65-7f390e18200d
 # ╠═c8d1f042-ad49-4971-aa32-b9c15d241da6
-# ╠═b08a9444-65f3-45fa-825a-94ce96bef202
 # ╠═c6105657-7697-462a-84f0-5b6cb0ffb4b1
 # ╠═87dc46a4-8f00-473a-9e37-817fc91e7ffe
 # ╠═48f1de66-e038-42db-8044-b5f83c86eacf
-# ╠═3ec5c7b7-cae2-45a8-83ce-2c77993ae9fe
-# ╠═73693311-fab8-4ff7-8c11-1814c5873283
-# ╠═52218b79-4396-45f6-a06d-c0e8e30e7cb0
-# ╠═77293f6a-0141-4fa0-81da-5a74e35b2537
-# ╠═7bc0465a-d505-4f6f-8dd5-cf614c36ebd4
 # ╠═68e143e5-fdca-4a68-963f-40f02609732b
-# ╠═871f4a19-ea87-4f59-b1b9-d8321b7852e8
-# ╠═7674c735-b41f-4d6d-80f0-0b0bab237767
+# ╠═2ff3f387-c91b-4b77-927d-cc40de737a27
+# ╠═85b13f02-e662-43f3-99ec-12db657b472c
 # ╠═7b3216d8-787e-4654-9827-7f303e42abff

@@ -1,25 +1,25 @@
 module ReachabilityCascade
 
-using LinearAlgebra, Random, LazySets, Flux, JLD2, Plots, Statistics, Plots.Measures
+using LinearAlgebra, StaticArrays, Random, LazySets, Flux, JuMP, Clarabel, JLD2, Plots, Statistics, Plots.Measures
 
 # from controlsystem.jl
 export ContinuousSystem, DiscreteRandomSystem
 
-# from ann.jl
-export Flow, inverse, loglikelihood, nll
+# from optimization.jl
+export linearize, lqr_lyap, correct_trajectory
+
+# from sampling.jl
+export grid_serpentine
 
 # from glu.jl
 export GLU
 
-# from transitionnet.jl
-export TransitionNet
-
 include("controlsystem.jl")
-include("flow.jl")
 include("glu.jl")
-include("transitionnet.jl")
 
 # examples
 include("examples/car/dynamics.jl")
+include("optimization.jl")
+include("sampling.jl")
 
 end

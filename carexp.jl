@@ -1,5 +1,5 @@
 ### A Pluto.jl notebook ###
-# v0.20.4
+# v0.20.17
 
 using Markdown
 using InteractiveUtils
@@ -315,7 +315,13 @@ function generate_data(ds::DiscreteRandomSystem, samples::AbstractVector, margin
 		x0 = s[1:state_dim]
 		d = proj*s[(state_dim+1):end] - abs.(proj)*margin
 
-		res, status = gen_trajectory(ds, x0, T, proj, d)
+		res, status = nothing, false
+
+		try
+			res, status = gen_trajectory(ds, x0, T, proj, d)
+		catch err
+			continue
+		end
 
 		if status
 			if res.robustness >=0
@@ -329,6 +335,8 @@ function generate_data(ds::DiscreteRandomSystem, samples::AbstractVector, margin
 					"data" => data,
 				)
 			)
+
+			start_time = time()
 		end
 
 		index += 1
@@ -398,13 +406,13 @@ let
 	
 	# res, status = gen_trajectory(ds, x0, T, proj, d_gen)
 
-	# generate_data(ds, samples, margin, T, last_index=100, savefile="data/car/test.jld2")
+	generate_data(ds, samples, margin, T, savefile="data/car/test.jld2")
 
-	data_dict = JLD2.load("data/car/test.jld2")
+	# data_dict = JLD2.load("data/car/test.jld2")
 
-	old_data = data_dict["data"]
+	# old_data = data_dict["data"]
 
-	generate_data(ds, samples, margin, T, data=old_data, start_index=old_data[end].index+1, last_index=300, savefile="data/car/test.jld2")
+	# generate_data(ds, samples, margin, T, data=old_data, start_index=old_data[end].index+1, last_index=200, savefile="data/car/test.jld2")
 
 	
 end

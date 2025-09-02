@@ -403,17 +403,22 @@ let
 	samples = grid_serpentine(rect_serp, step, dims=grid_dims)
 
 	margin = vcat(1.0, 0.5, fill(1e7, 11))
-	
-	# res, status = gen_trajectory(ds, x0, T, proj, d_gen)
 
-	generate_data(ds, samples, margin, T, savefile="data/car/test.jld2")
+	# generate_data(ds, samples, margin, T, savefile="data/car/test.jld2")
 
-	# data_dict = JLD2.load("data/car/test.jld2")
+	data_dict = JLD2.load("data/car/test.jld2")
 
-	# old_data = data_dict["data"]
+	old_data = data_dict["data"]
 
 	# generate_data(ds, samples, margin, T, data=old_data, start_index=old_data[end].index+1, last_index=200, savefile="data/car/test.jld2")
 
+	# res, status = gen_trajectory(ds, x0, T, proj, d_gen)
+	# ref_sample = vcat(x0, res.state_trajectory[:, end])
+	# ref_sample[4] = 12
+
+	_, check_ind = findmax([s.state_trajectory[1,1] < s.state_trajectory[8, 1] && s.state_trajectory[1,end] > s.state_trajectory[8, end] && s.state_trajectory[2,end] > 2.5 && abs(s.state_trajectory[6,end]) < 0.1 for s in old_data])
+
+	old_data[check_ind]
 	
 end
 

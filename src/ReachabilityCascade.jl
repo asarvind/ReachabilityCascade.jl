@@ -35,6 +35,14 @@ end
 using .GatedLinearUnits: GLU
 export GLU
 
+module NormalizingFlow
+    using Flux
+    using ..GatedLinearUnits: GLU
+    include("flow.jl")
+end
+using .NormalizingFlow: ConditionalFlow
+export ConditionalFlow
+
 # examples
 module CarDynamics
     using LazySets

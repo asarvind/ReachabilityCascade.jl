@@ -1,25 +1,45 @@
 module ReachabilityCascade
 
-using LinearAlgebra, StaticArrays, Random, LazySets, Flux, JuMP, Clarabel, JLD2, Plots, Statistics, Plots.Measures
+# using LinearAlgebra, StaticArrays, Random, LazySets, Flux, JuMP, Clarabel, JLD2, Plots, Statistics, Plots.Measures
 
-# from controlsystem.jl
+
+
+module ControlSystem
+    using Random, LinearAlgebra
+    using LazySets
+    include("controlsystem.jl")
+end
+#
+using .ControlSystem: ContinuousSystem, DiscreteRandomSystem
 export ContinuousSystem, DiscreteRandomSystem
 
-# from optimization.jl
+module ControlUtilities
+    using ..ControlSystem: ContinuousSystem, DiscreteRandomSystem
+    using JuMP
+    include("controlutils.jl")
+end
+using .ControlUtilities: linearize, lqr_lyap, correct_trajectory
 export linearize, lqr_lyap, correct_trajectory
 
-# from sampling.jl
+module Sampling
+    using LazySets, StaticArrays
+    include("sampling.jl")
+end
+using .Sampling: grid_serpentine
 export grid_serpentine
 
-# from glu.jl
+module GatedLinearUnits
+    using Flux
+    include("glu.jl")
+end
+using .GatedLinearUnits: GLU
 export GLU
 
-include("controlsystem.jl")
-include("glu.jl")
-
 # examples
-include("examples/car/dynamics.jl")
-include("optimization.jl")
-include("sampling.jl")
+module CarDynamics
+    using LazySets
+    include("examples/car/dynamics.jl")
+end
+
 
 end

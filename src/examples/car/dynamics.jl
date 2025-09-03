@@ -1,7 +1,3 @@
-module CarDynamics
-
-using LazySets
-
 # lwb = Float32.(2.5789)
 # m = Float32(1093.3)
 # μ = 1.0489 |> Float32
@@ -89,8 +85,5 @@ function changerate2(x::Vector{<:Real}, u::Vector{<:Real})
     b6 = (μ*m/(Iz*(lr+lf)))*( lf*CSf*x[3]*(g*lr-u[2]*hcg) +   (lr*CSr*(g*lf+u[2]*hcg)-lf*CSf*(g*lr-u[2]*hcg))*x[7] - (lf^2*CSf*(g*lr-u[2]*hcg)+ lr^2*CSr*(g*lf+u[2]*hcg))*x[6]/x[4] )
     b7 = (μ/(x[4]*(lr+lf)))*( CSf*(g*lr-u[2]*hcg)*x[3] - (CSr*(g*lf+u[2]*hcg) + CSf*(g*lr-u[2]*hcg))*x[7] - (lf*CSf*(g*lr-u[2]*hcg) - lr*CSr*(g*lf+u[2]*hcg))x[6]/x[4] ) - x[6]
     return [b1, b2, b3, b4, b5, b6, b7]
-end
-
-# end of module
 end
 

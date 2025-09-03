@@ -1,5 +1,5 @@
 ### A Pluto.jl notebook ###
-# v0.20.17
+# v0.20.4
 
 using Markdown
 using InteractiveUtils
@@ -418,8 +418,46 @@ let
 
 	_, check_ind = findmax([s.state_trajectory[1,1] < s.state_trajectory[8, 1] && s.state_trajectory[1,end] > s.state_trajectory[8, end] && s.state_trajectory[2,end] > 2.5 && abs(s.state_trajectory[6,end]) < 0.1 for s in old_data])
 
-	old_data[check_ind]
+	ds(old_data[check_ind].state_trajectory[:, 1], old_data[check_ind].input_signal) - old_data[check_ind].state_trajectory
 	
+end
+
+# ╔═╡ 5e67b5bb-c776-4f5a-934a-369a89540b93
+let
+	function nll(flow, x, c)
+	    z, logdet = flow(x, c)
+	    ll_prior = -0.5f0 * sum(z.^2; dims=1) .- (size(z,1)/2) * log(2f0*pi)
+	    ll = vec(ll_prior) .+ logdet
+	    return -mean(ll)  # negative log-likelihood
+	end
+	
+	D, C, B = 8, 3, 32
+	flow = ConditionalFlow(D, C; n_blocks=6, hidden=128, n_glu=2)
+	x = randn(Float32, D, B); c = randn(Float32, C, B)
+	
+	gs = Flux.gradient(flow) do m
+		nll(m, x, c)  # gradients w.r.t. `flow`
+	end
+	# Inspect a few leaves:
+	# Flux.fmap(flow) do p
+	#     if p isa AbstractArray
+	#         g = gs[p]              # gradient for this parameter (may be `nothing` if unused)
+	#         @assert g === nothing || all(isfinite, g)
+	#     end
+	#     return p
+	# end
+end
+
+# ╔═╡ a9167a22-f989-4df1-a861-033347868892
+let
+	Random.seed!(0)
+	D, C, B = 5, 2, 4
+	flow = ConditionalFlow(D, C; n_blocks=4, hidden=64, n_glu=2, scaling=fill(2f0, D))
+	x = randn(Float32, D, B); c = randn(Float32, C, B)
+	z, ld1 = flow(x, c)
+	xr, ld2 = flow(z, c, inverse=true)
+	@show maximum(abs.(xr .- x))
+	@show mean(ld1 .+ ld2)
 end
 
 # ╔═╡ Cell order:
@@ -432,3 +470,5 @@ end
 # ╠═2ff3f387-c91b-4b77-927d-cc40de737a27
 # ╠═85b13f02-e662-43f3-99ec-12db657b472c
 # ╠═7b3216d8-787e-4654-9827-7f303e42abff
+# ╠═5e67b5bb-c776-4f5a-934a-369a89540b93
+# ╠═a9167a22-f989-4df1-a861-033347868892

@@ -1,9 +1,5 @@
 module ReachabilityCascade
 
-# using LinearAlgebra, StaticArrays, Random, LazySets, Flux, JuMP, Clarabel, JLD2, Plots, Statistics, Plots.Measures
-
-
-
 module ControlSystem
     using Random, LinearAlgebra
     using LazySets
@@ -15,7 +11,7 @@ export ContinuousSystem, DiscreteRandomSystem
 
 module ControlUtilities
     using ..ControlSystem: ContinuousSystem, DiscreteRandomSystem
-    using JuMP
+    using LazySets, JuMP, LinearAlgebra, Clarabel
     include("controlutils.jl")
 end
 using .ControlUtilities: linearize, lqr_lyap, correct_trajectory
@@ -46,8 +42,17 @@ export ConditionalFlow
 # examples
 module CarDynamics
     using LazySets
+    using ..ControlSystem: ContinuousSystem, DiscreteRandomSystem
     include("examples/car/dynamics.jl")
+    include("examples/car/modelbuilders.jl")
 end
 
+module CarDataGeneration
+    using LazySets, JuMP, LinearAlgebra, HiGHS, JLD2
+    using ..ControlSystem: DiscreteRandomSystem
+    using ..ControlUtilities: linearize, lqr_lyap, correct_trajectory
+    using ..CarDynamics: discrete_vehicles
+    include("examples/car/datageneration.jl")
+end
 
 end

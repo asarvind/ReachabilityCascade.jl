@@ -34,10 +34,18 @@ export GLU
 module NormalizingFlow
     using Flux
     using ..GatedLinearUnits: GLU
-    include("flow.jl")
+    include("normalflow/thismain.jl")
 end
-using .NormalizingFlow: ConditionalFlow
-export ConditionalFlow
+using .NormalizingFlow: ConditionalFlow, loglikelihoods
+export ConditionalFlow, loglikelihoods
+
+module NeuralReachability
+    using Flux, Random, LinearAlgebra
+    using ..NormalizingFlow: ConditionalFlow, loglikelihoods 
+    include("nrle/thismain.jl")
+end
+using .NeuralReachability: NRLE, encode, reach, train
+export encode, reach, train
 
 # examples
 module CarDynamics

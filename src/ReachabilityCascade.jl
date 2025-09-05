@@ -40,7 +40,7 @@ using .NormalizingFlow: ConditionalFlow, loglikelihoods
 export ConditionalFlow, loglikelihoods
 
 module NeuralReachability
-    using Flux, Random, LinearAlgebra
+    using Flux, Random, LinearAlgebra, JLD2
     using ..NormalizingFlow: ConditionalFlow, loglikelihoods 
     include("nrle/thismain.jl")
 end

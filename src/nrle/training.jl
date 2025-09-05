@@ -1,10 +1,19 @@
-function train(::Type{NRLE}, prop_fun::Function, data::AbstractVector, time_stamps::Vector{<:Integer}; optimizer=Adam(0.001), max_batch_size::Integer = 100, kwargs...)	
+function train(::Type{NRLE}, prop_fun::Function, data::AbstractVector, time_stamps::Vector{<:Integer}; optimizer=Adam(0.001), max_batch_size::Integer = 100, savefile::String="", loadfile::String=savefile, kwargs...)	
+
+	if isfile(loadfile)
+		model_state = JLD2.load(loadfile, "model_state")
+		kwargs = JLD2.load(loadfile, "kwargs")
+	end
 	
 	# construct the neural network and optimizer
 	state_dim = size(data[1].state_trajectory, 1)
 	prop_dim = size(prop_fun(data[1].state_trajectory, data[1].input_signal), 1)
 	nrle = NRLE(state_dim, prop_dim; kwargs...)
 	opt = Flux.setup(optimizer, nrle)
+
+	if isfile(loadfile)
+		Flux.loadmodel!(nrle, model_state)
+	end
 	
 	# training iterations
 	x0_batch = Matrix{Float32}(undef, state_dim, 0)
@@ -12,6 +21,8 @@ function train(::Type{NRLE}, prop_fun::Function, data::AbstractVector, time_stam
 	prop_batch = Matrix{Float32}(undef, prop_dim, 0)
 
 	l = length(time_stamps)
+
+	start_time = time()
 	
 	for data_tup in shuffle(data)
 		strj, utrj = data_tup.state_trajectory, data_tup.input_signal
@@ -65,6 +76,27 @@ function train(::Type{NRLE}, prop_fun::Function, data::AbstractVector, time_stam
 		x0_batch = x0_batch[:, sorted_inds]
 		xfin_batch = xfin_batch[:, sorted_inds]
 		prop_batch = prop_batch[:, sorted_inds]
+
+		if time() - start_time > 60 && !isempty(savefile)
+			model_state = Flux.state(nrle)
+			JLD2.save("savefile",
+				Dict(
+					"model_state" => model_state,
+					"kwargs" => kwargs
+				)
+			)
+			start_time = time()
+		end
+	end
+
+	if !isempty(savefile)
+		model_state = Flux.state(nrle)
+		JLD2.save(savefile,
+			Dict(
+				"model_state" => model_state,
+				"kwargs" => kwargs
+			)
+		)		
 	end
 
 	return nrle

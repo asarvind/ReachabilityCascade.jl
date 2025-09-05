@@ -133,7 +133,7 @@ let
 	state_scale .*= adj
 	prop_scale .*= adj
 
-	@time train(NRLE, property_fun, shuffle(data)[1:1000], time_stamps, state_scaling=state_scale, prop_scaling=prop_scale, n_blocks=6, hidden=128, n_glu=2, bias=true)
+	@time train(NRLE, property_fun, shuffle(data)[1:100], time_stamps, state_scaling=state_scale, prop_scaling=prop_scale, savefile="data/car/testnet.jld2", n_blocks=6, hidden=128, n_glu=2, bias=true)
 end
 
 # ╔═╡ Cell order:

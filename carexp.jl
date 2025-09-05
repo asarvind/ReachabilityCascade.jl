@@ -19,8 +19,11 @@ symlink(pwd(), link_path)
 Pkg.activate("SymlinkReachabilityCascade")
 end
 
-# ╔═╡ c8d1f042-ad49-4971-aa32-b9c15d241da6
-using LinearAlgebra, Random, LazySets, Flux, Statistics, JuMP, SparseArrays, StaticArrays, HiGHS, Clarabel, JLD2
+# ╔═╡ 23334c32-43a8-43e5-ac84-7d007d6f24d1
+begin
+	using Random, LinearAlgebra, JLD2
+	using LazySets: Hyperrectangle, low, high
+end
 
 # ╔═╡ 9c205052-f2a5-4616-a99e-4ab9d48f4ddf
 using ReachabilityCascade: grid_serpentine, ConditionalFlow, loglikelihoods, NRLE, train
@@ -130,12 +133,12 @@ let
 	state_scale .*= adj
 	prop_scale .*= adj
 
-	train(NRLE, property_fun, shuffle(data)[1:100], time_stamps, state_scaling=state_scale, prop_scaling=prop_scale)
+	@time train(NRLE, property_fun, shuffle(data)[1:1000], time_stamps, state_scaling=state_scale, prop_scaling=prop_scale, n_blocks=6, hidden=128, n_glu=2, bias=true)
 end
 
 # ╔═╡ Cell order:
 # ╠═fc3c2db6-7193-11f0-1b65-7f390e18200d
-# ╠═c8d1f042-ad49-4971-aa32-b9c15d241da6
+# ╠═23334c32-43a8-43e5-ac84-7d007d6f24d1
 # ╠═9c205052-f2a5-4616-a99e-4ab9d48f4ddf
 # ╠═91675df7-f4ef-48e8-ae23-bdf9e4d1ecf7
 # ╠═9f648ae2-043a-404d-9ed2-e985f5f642ba

@@ -56,7 +56,7 @@ function train(::Type{NRLE}, prop_fun::Function, data::AbstractVector, time_stam
 			_, ll = encode(this_net, x0_batch, xfin_batch, prop_batch)
 			-sum(ll)/length(ll)  # return negative of log-likelihood for maximization
 		end
-		return grads[1]
+
 		Flux.update!(opt, nrle, grads[1])
 
 		_, ll = encode(nrle, x0_batch, xfin_batch, prop_batch)

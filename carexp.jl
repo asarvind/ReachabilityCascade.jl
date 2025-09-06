@@ -1,5 +1,5 @@
 ### A Pluto.jl notebook ###
-# v0.20.4
+# v0.20.17
 
 using Markdown
 using InteractiveUtils
@@ -21,12 +21,14 @@ end
 
 # ╔═╡ 23334c32-43a8-43e5-ac84-7d007d6f24d1
 begin
-	using Random, LinearAlgebra, JLD2
+	using Random, LinearAlgebra
+	import JLD2
 	using LazySets: Hyperrectangle, low, high
+	using Flux: OptimiserChain, ClipNorm, Adam
 end
 
 # ╔═╡ 9c205052-f2a5-4616-a99e-4ab9d48f4ddf
-using ReachabilityCascade: grid_serpentine, ConditionalFlow, loglikelihoods, NRLE, train
+using ReachabilityCascade: grid_serpentine, ConditionalFlow, loglikelihoods, NRLE, train, load, reach
 
 # ╔═╡ 91675df7-f4ef-48e8-ae23-bdf9e4d1ecf7
 import ReachabilityCascade.CarDynamics: discrete_vehicles
@@ -133,7 +135,24 @@ let
 	state_scale .*= adj
 	prop_scale .*= adj
 
-	@time train(NRLE, property_fun, shuffle(data)[1:100], time_stamps, state_scaling=state_scale, prop_scaling=prop_scale, savefile="data/car/testnet.jld2", n_blocks=6, hidden=128, n_glu=2, bias=true)
+	optimizer = OptimiserChain(ClipNorm(), Adam(1e-3))
+
+	@time train(NRLE, property_fun, data, time_stamps, state_scaling=state_scale, prop_scaling=prop_scale, epochs=10, optimizer=optimizer, savefile="data/car/nrle.jld2", n_blocks=6, hidden=128, n_glu=2, bias=true)
+end
+
+# ╔═╡ 3441412f-b56e-4906-863c-1a8b656b7ae9
+let
+	data = JLD2.load("data/car/trajectories.jld2", "data")
+	nrle = load(NRLE, "data/car/nrle.jld2", property_fun, data)
+
+	ds = discrete_vehicles(0.25)
+
+	ind = rand(1:length(data))
+	ind = 11776
+	println("data index = $ind")
+	x0 = data[ind].state_trajectory[:,20]
+	
+	reach(nrle, x0, randn(20)), x0
 end
 
 # ╔═╡ Cell order:
@@ -145,3 +164,4 @@ end
 # ╠═7b3216d8-787e-4654-9827-7f303e42abff
 # ╠═8a457e51-7cca-40f5-8448-fdd43672e8a2
 # ╠═dc208608-727d-427d-acc0-9b4d90e9661a
+# ╠═3441412f-b56e-4906-863c-1a8b656b7ae9

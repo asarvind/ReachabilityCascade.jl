@@ -1,4 +1,4 @@
-function train(::Type{NRLE}, prop_fun::Function, data::AbstractVector, time_stamps::Vector{<:Integer}; optimizer=Adam(0.001), max_batch_size::Integer = 100, savefile::String="", loadfile::String=savefile, kwargs...)	
+function train(::Type{NRLE}, prop_fun::Function, data::AbstractVector, time_stamps::Vector{<:Integer}; epochs::Integer=1, optimizer=Adam(0.001), max_batch_size::Integer = 100, savefile::String="", loadfile::String=savefile, kwargs...)	
 
 	if isfile(loadfile)
 		model_state = JLD2.load(loadfile, "model_state")
@@ -24,68 +24,70 @@ function train(::Type{NRLE}, prop_fun::Function, data::AbstractVector, time_stam
 
 	start_time = time()
 	
-	for data_tup in shuffle(data)
-		strj, utrj = data_tup.state_trajectory, data_tup.input_signal
-		
-		tseq = [rand(time_stamps[i]:time_stamps[i+1]) for i in 1:(length(time_stamps)-1)]
-		
-		rand_batch = [
-		    ( strj[:, tseq[i]],
-		      strj[:, tseq[j] + 1],
-		      prop_fun(strj[:, tseq[i]:(tseq[j] + 1)], utrj[:, tseq[i]:tseq[j]]) )
-		    for i in 1:(l-2)
-		    for j in i:(l-1)
-		]
-		
-		det_batch = [
-		    ( strj[:, time_stamps[i]],
-		      strj[:, time_stamps[j] + 1],
-		      prop_fun(strj[:, time_stamps[i]:(time_stamps[j] + 1)], utrj[:, time_stamps[i]:time_stamps[j]]) )
-		    for i in 1:(l-1)
-		    for j in i:l
-		]
-		
-		x0_batch = hcat(
-			x0_batch, 
-			reduce(hcat, [tup[1] for tup in rand_batch]),
-			reduce(hcat, [tup[1] for tup in det_batch])
-		)
-		
-		xfin_batch = hcat(
-			xfin_batch, 
-			reduce(hcat, [tup[2] for tup in rand_batch]),
-			reduce(hcat, [tup[2] for tup in det_batch])
-		)
-		
-		prop_batch = hcat(
-			prop_batch, 
-			reduce(hcat, [tup[3] for tup in rand_batch]),
-			reduce(hcat, [tup[3] for tup in det_batch])
-		)
-		
-		grads = Flux.gradient(nrle) do (this_net)
-			_, ll = encode(this_net, x0_batch, xfin_batch, prop_batch)
-			-sum(ll)/length(ll)  # return negative of log-likelihood for maximization
-		end
-
-		Flux.update!(opt, nrle, grads[1])
-
-		_, ll = encode(nrle, x0_batch, xfin_batch, prop_batch)
-		bnum = min(size(x0_batch, 2), max_batch_size)
-		sorted_inds = sortperm(ll)[1:bnum]
-		x0_batch = x0_batch[:, sorted_inds]
-		xfin_batch = xfin_batch[:, sorted_inds]
-		prop_batch = prop_batch[:, sorted_inds]
-
-		if time() - start_time > 60 && !isempty(savefile)
-			model_state = Flux.state(nrle)
-			JLD2.save("savefile",
-				Dict(
-					"model_state" => model_state,
-					"kwargs" => kwargs
-				)
+	for _ in 1:epochs
+		for data_tup in shuffle(data)
+			strj, utrj = data_tup.state_trajectory, data_tup.input_signal
+			
+			tseq = [rand(time_stamps[i]:time_stamps[i+1]) for i in 1:(length(time_stamps)-1)]
+			
+			rand_batch = [
+				( strj[:, tseq[i]],
+				strj[:, tseq[j] + 1],
+				prop_fun(strj[:, tseq[i]:(tseq[j] + 1)], utrj[:, tseq[i]:tseq[j]]) )
+				for i in 1:(l-2)
+				for j in i:(l-1)
+			]
+			
+			det_batch = [
+				( strj[:, time_stamps[i]],
+				strj[:, time_stamps[j] + 1],
+				prop_fun(strj[:, time_stamps[i]:(time_stamps[j] + 1)], utrj[:, time_stamps[i]:time_stamps[j]]) )
+				for i in 1:(l-1)
+				for j in i:l
+			]
+			
+			x0_batch = hcat(
+				x0_batch, 
+				reduce(hcat, [tup[1] for tup in rand_batch]),
+				reduce(hcat, [tup[1] for tup in det_batch])
 			)
-			start_time = time()
+			
+			xfin_batch = hcat(
+				xfin_batch, 
+				reduce(hcat, [tup[2] for tup in rand_batch]),
+				reduce(hcat, [tup[2] for tup in det_batch])
+			)
+			
+			prop_batch = hcat(
+				prop_batch, 
+				reduce(hcat, [tup[3] for tup in rand_batch]),
+				reduce(hcat, [tup[3] for tup in det_batch])
+			)
+			
+			grads = Flux.gradient(nrle) do (this_net)
+				_, ll = encode(this_net, x0_batch, xfin_batch, prop_batch)
+				-sum(ll)/length(ll)  # return negative of log-likelihood for maximization
+			end
+
+			Flux.update!(opt, nrle, grads[1])
+
+			_, ll = encode(nrle, x0_batch, xfin_batch, prop_batch)
+			bnum = min(size(x0_batch, 2), max_batch_size)
+			sorted_inds = sortperm(ll)[1:bnum]
+			x0_batch = x0_batch[:, sorted_inds]
+			xfin_batch = xfin_batch[:, sorted_inds]
+			prop_batch = prop_batch[:, sorted_inds]
+
+			if time() - start_time > 60 && !isempty(savefile)
+				model_state = Flux.state(nrle)
+				JLD2.save(savefile,
+					Dict(
+						"model_state" => model_state,
+						"kwargs" => kwargs
+					)
+				)
+				start_time = time()
+			end
 		end
 	end
 
@@ -98,6 +100,17 @@ function train(::Type{NRLE}, prop_fun::Function, data::AbstractVector, time_stam
 			)
 		)		
 	end
+
+	return nrle
+end
+
+function load(::Type{NRLE},loadfile::String, prop_fun::Function, data::AbstractVector)
+	state_dim = size(data[1].state_trajectory, 1)
+	prop_dim = size(prop_fun(data[1].state_trajectory, data[1].input_signal), 1)
+	model_state = JLD2.load(loadfile, "model_state")
+	kwargs = JLD2.load(loadfile, "kwargs")
+	nrle = NRLE(state_dim, prop_dim; kwargs...)
+	Flux.loadmodel!(nrle, model_state)
 
 	return nrle
 end

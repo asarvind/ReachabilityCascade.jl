@@ -40,12 +40,13 @@ using .NormalizingFlow: ConditionalFlow, loglikelihoods
 export ConditionalFlow, loglikelihoods
 
 module NeuralReachability
-    using Flux, Random, LinearAlgebra, JLD2
+    using Flux, Random, LinearAlgebra
+    import JLD2
     using ..NormalizingFlow: ConditionalFlow, loglikelihoods 
     include("nrle/thismain.jl")
 end
-using .NeuralReachability: NRLE, encode, reach, train
-export encode, reach, train
+using .NeuralReachability: NRLE, encode, reach, train, load
+export NRLE, encode, reach, train, load
 
 # examples
 module CarDynamics

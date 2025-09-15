@@ -65,13 +65,13 @@ function train(::Type{NRLE}, prop_fun::Function, data::AbstractVector, time_stam
 			)
 			
 			grads = Flux.gradient(nrle) do (this_net)
-				_, ll = encode(this_net, x0_batch, xfin_batch, prop_batch)
-				-sum(ll)/length(ll)  # return negative of log-likelihood for maximization
+				tup = encode(this_net, x0_batch, xfin_batch, prop_batch)
+				-sum(tup.log_likelihood)/length(tup.log_likelihood)  # return negative of log-likelihood for maximization
 			end
 
 			Flux.update!(opt, nrle, grads[1])
 
-			_, ll = encode(nrle, x0_batch, xfin_batch, prop_batch)
+			ll = encode(nrle, x0_batch, xfin_batch, prop_batch).log_likelihood
 			bnum = min(size(x0_batch, 2), max_batch_size)
 			sorted_inds = sortperm(ll)[1:bnum]
 			x0_batch = x0_batch[:, sorted_inds]

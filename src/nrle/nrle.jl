@@ -56,7 +56,7 @@ function encode(nrle::NRLE, s_now, x_next, prop)
     ll_prior = -0.5f0 .* sum(z.^2; dims=1) .- (D/2) .* log(2f0*pi)
 
     ll = vec(ll_prior) .+ logdet
-    return z, ll
+    return (latent=z, log_determinant=logdet, log_likelihood = ll)
 end
 
 function reach(nrle::NRLE, s_now, z)
@@ -67,13 +67,13 @@ function reach(nrle::NRLE, s_now, z)
 
     c = s
 
-    y_norm, _ = nrle.flow(Z, c; inverse=true)
+    y_norm, ld = nrle.flow(Z, c; inverse=true)
 
     x_diff = @views y_norm[1:nrle.state_dim, :]
     prop   = @views y_norm[nrle.state_dim+1:end, :]
 
     x_next = x_diff .+ s
-    return x_next, prop
+    return (next_state=x_next, property=prop, log_det= -ld) # take negative of -ld to consider encoding likelihood
 end
 
 # -------------------------- Automated Constructor ----------------------------

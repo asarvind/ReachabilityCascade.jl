@@ -1,7 +1,12 @@
 function train(::Type{SequenceGenerator}, sampling_fn::Function, maxiter::Integer, dataargs::AbstractVector...; scale::Union{Nothing, Vector{<:Real}}=nothing, batch_size::Integer=200, flow_num::Integer = 5, optimizer = Flux.OptimiserChain(Flux.ClipNorm(), Flux.Adam()), save_period::Real=60, savefile::String="", kwargs...)
 
 	# calculate sample and context dimensions
-	smp, ctx = sampling_fn(dataargs[1][1].state_trajectory, dataargs[1][1].input_signal)
+	tup = sampling_fn(dataargs[1][1].state_trajectory, dataargs[1][1].input_signal)
+	if !isa(tup, NamedTuple) || !haskey(tup, :sample) || !haskey(tup, :context)
+		throw(ArgumentError("The sampling function must return a NamedTuple with fields :sample and :context"))
+	end
+	
+	smp, ctx = tup.sample, tup.context
 	sample_dim = size(smp, 1)
 	context_dim = size(ctx, 1)
 
@@ -29,14 +34,15 @@ function train(::Type{SequenceGenerator}, sampling_fn::Function, maxiter::Intege
 			data = dataargs_shuffled[i]
 			idx = (iter ÷ length(data)) + 1
 			strj, utrj = data[idx].state_trajectory, data[idx].input_signal
-			smp, ctx = sampling_fn(strj, utrj)
+			tup = sampling_fn(strj, utrj)
+			smp, ctx = tup.sample, tup.context
 			ctx_batches[i] = hcat(ctx, ctx_batches[i])
 			smp_batches[i] = hcat(smp, smp_batches[i])
 			idx_latent[i] = vcat(fill(iter, size(ctx, 2)), idx_latent[i])
 			latent = randn_by_id(idx_latent[i], sg.latent_dim)
 
 			# compute scale
-			if scale != nothing 
+			if !isnothing(scale)
 				sc = vcat(scale, ones(size(latent, 1) - length(scale)))
 			else
 				sc = ones(size(latent, 1))

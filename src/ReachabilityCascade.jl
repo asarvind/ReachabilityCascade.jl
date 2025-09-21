@@ -28,25 +28,40 @@ module GatedLinearUnits
     using Flux
     include("glu.jl")
 end
-using .GatedLinearUnits: GLU
-export GLU
+using .GatedLinearUnits: GLU, glu_mlp
+export GLU, glu_mlp
 
 module NormalizingFlow
     using Flux
-    using ..GatedLinearUnits: GLU
+    using ..GatedLinearUnits: GLU, glu_mlp
     include("normalflow/thismain.jl")
 end
 using .NormalizingFlow: ConditionalFlow, loglikelihoods
 export ConditionalFlow, loglikelihoods
 
-module NeuralReachability
-    using Flux, Random, LinearAlgebra
-    import JLD2
-    using ..NormalizingFlow: ConditionalFlow, loglikelihoods 
-    include("nrle/thismain.jl")
+# module NeuralReachability
+#     using Flux, Random, LinearAlgebra
+#     import JLD2
+#     using ..NormalizingFlow: ConditionalFlow, loglikelihoods 
+#     include("nrle/thismain.jl")
+# end
+# import .NeuralReachability: NRLE, encode, reach, train, load
+# export NRLE, encode, reach, train, load 
+
+module SequenceGeneration
+	import Flux
+	using LinearAlgebra, Random
+	import LazySets: Hyperrectangle, high, low, dim
+	import JLD2
+	import ..GatedLinearUnits: GLU
+    
+    include("SequenceGenerator/utils.jl")
+    include("SequenceGenerator/neuralnet.jl")
+    include("SequenceGenerator/training.jl")
 end
-using .NeuralReachability: NRLE, encode, reach, train, load
-export NRLE, encode, reach, train, load
+using .SequenceGeneration: SequenceGenerator, train
+export SequenceGenerator, train
+
 
 # examples
 module CarDynamics

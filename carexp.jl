@@ -37,13 +37,6 @@ end
 # ╔═╡ 9c205052-f2a5-4616-a99e-4ab9d48f4ddf
 using ReachabilityCascade: DiscreteRandomSystem, grid_serpentine, ConditionalFlow, loglikelihoods, NRLE, load, encode, reach
 
-# ╔═╡ d8e24f44-4fe2-4128-851c-057e88fce51f
-begin
-import ReachabilityCascade: train
-import Flux
-include("tempcode.jl")
-end
-
 # ╔═╡ 91675df7-f4ef-48e8-ae23-bdf9e4d1ecf7
 import ReachabilityCascade.CarDynamics: discrete_vehicles
 
@@ -441,6 +434,17 @@ function mpc(ds::DiscreteRandomSystem, steps::Integer, x_now::AbstractVector, nr
 	ds(x_now, κ, steps)
 end
 
+# ╔═╡ d8e24f44-4fe2-4128-851c-057e88fce51f
+begin
+# include("tempcode.jl")
+# struct LMTE{E}
+#     context_dim::Integer 
+#     control_dim::Integer 
+#     transfer_dim::Integer
+#     experts::Vector{E}
+# end
+end
+
 # ╔═╡ 3441412f-b56e-4906-863c-1a8b656b7ae9
 let
 	Random.seed!(0)
@@ -477,24 +481,6 @@ let
 	# linopt(nrle, xtrj[:,end], zeros(20, 2), target_mat, 10, t1_bound=2.0)
 	# x = mpc(ds, 2, x, nrle, target_mat, zeros(20, 2), iter, t1_bound=1.0)[:, end]
 	# x = mpc(ds, steps, x, nrle, target_mat, zeros(20, 2), iter)[:, end]
-
-	
-	ctx_scale = ones(14)
-	ctx_scale[[3, 5,6, 7]] *= 10.0
-	ctx_scale *= 0.1
-
-	trenc(data[ind].state_trajectory, data[ind].input_signal)
-	prop_scale = ones(34)
-	prop_scale[33] *= 10
-	prop_scale[[26, 28, 29, 30]] *= 10
-	prop_scale *= 0.1
-
-	savefile = "data/car/flownet.jld2"
-
-	optimizer = OptimiserChain(ClipNorm(), Adam())
-	@time train(ConditionalFlow, data[1:100], context_car, trenc, sampling_time=4, c_scaling=ctx_scale, x_scaling=prop_scale, optimizer = optimizer, savefile=savefile)
-	
-	load_flow(ConditionalFlow, savefile, context_car, trenc, data[1:3])
 end
 
 # ╔═╡ Cell order:

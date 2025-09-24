@@ -48,21 +48,6 @@ export ConditionalFlow, loglikelihoods
 # import .NeuralReachability: NRLE, encode, reach, train, load
 # export NRLE, encode, reach, train, load 
 
-module SequenceGeneration
-	import Flux
-	using LinearAlgebra, Random
-	import LazySets: Hyperrectangle, high, low, dim
-	import JLD2
-	import ..GatedLinearUnits: GLU
-    
-    include("SequenceGenerator/utils.jl")
-    include("SequenceGenerator/neuralnet.jl")
-    include("SequenceGenerator/training.jl")
-end
-using .SequenceGeneration: SequenceGenerator, train
-export SequenceGenerator, train
-
-
 # examples
 module CarDynamics
     using LazySets

@@ -15,15 +15,17 @@ training** via a `Flux.trainable` override.
 - `blocks::Vector{AffineCouplingGLU}` : sequence of coupling layers
 - `x_dim::Int`                        : data dimensionality `D`
 - `ctx_dim::Int`                      : context dimensionality
-- `x_scaling::Vector{Float32}`        : per-feature non-diff scaling for samples
-- `c_scaling::Vector{Float32}`        : per-feature non-diff scaling for context
+- `x_scaling::AbstractVector{Float32}`        : per-feature non-diff scaling for samples
+- `c_scaling::AbstractVector{Float32}`        : per-feature non-diff scaling for context
+- `clamp_lim::Real`                       : log-saturation limit on scaling blocks of affine coupling 
 """
 struct ConditionalFlow{B}
     blocks::Vector{B}
     x_dim::Int
     ctx_dim::Int
-    x_scaling::Vector{Float32}
-    c_scaling::Vector{Float32}
+    x_scaling::AbstractVector{Float32}
+    c_scaling::AbstractVector{Float32}
+    clamp_lim::Real
 end
 
 # Register as a Flux layer container
@@ -62,7 +64,8 @@ end
                     n_blocks::Integer=6, hidden::Integer=128,
                     n_glu::Integer=2, bias::Bool=true,
                     x_scaling::AbstractVector{<:Real}=ones(Float32, x_dim),
-                    c_scaling::AbstractVector{<:Real}=ones(Float32, ctx_dim))
+                    c_scaling::AbstractVector{<:Real}=ones(Float32, ctx_dim),
+                    clamp_lim::Real)
 
 Build a conditional normalizing flow with GLU-based affine couplings and fixed,
 non-differentiable per-feature scaling vectors for both samples and context.
@@ -81,6 +84,7 @@ accordingly.
 - `bias=true`  : include bias terms in dense layers
 - `x_scaling`  : length-`x_dim` vector; must be nonzero per entry
 - `c_scaling`  : length-`ctx_dim` vector; must be nonzero per entry
+- `clamp_lim`      : real scalar limit on log-saturation of scaling in affine coupling blocks
 
 # Returns
 A `ConditionalFlow` instance.
@@ -89,7 +93,8 @@ function ConditionalFlow(x_dim::Integer, ctx_dim::Integer;
                          n_blocks::Integer=6, hidden::Integer=128,
                          n_glu::Integer=2, bias::Bool=true,
                          x_scaling::AbstractVector{<:Real}=ones(Float32, x_dim),
-                         c_scaling::AbstractVector{<:Real}=ones(Float32, ctx_dim))
+                         c_scaling::AbstractVector{<:Real}=ones(Float32, ctx_dim), 
+                         clamp_lim::Real=3.0)
     @assert length(x_scaling) == x_dim "x_scaling length must equal x_dim"
     @assert length(c_scaling) == ctx_dim "c_scaling length must equal ctx_dim"
     @assert all(abs.(x_scaling) .> 0) "x_scaling must be nonzero for invertibility"
@@ -98,7 +103,7 @@ function ConditionalFlow(x_dim::Integer, ctx_dim::Integer;
     blocks = [AffineCouplingGLU(m, x_dim, ctx_dim; hidden=hidden, n_glu=n_glu, bias=bias)
               for m in masks]
     return ConditionalFlow{eltype(blocks)}(blocks, x_dim, ctx_dim,
-                                           Float32.(x_scaling), Float32.(c_scaling))
+                                           Float32.(x_scaling), Float32.(c_scaling), Float32.(clamp_lim))
 end
 
 # ------------------------------- Encode --------------------------------------
@@ -127,11 +132,10 @@ function encode(flow::ConditionalFlow, x::AbstractVecOrMat, c::AbstractVecOrMat)
     z = flow.x_scaling .* xarr
     cscaled = flow.c_scaling .* carr
     ld = sum(log.(abs.(flow.x_scaling)))         # sample logdet
-    # ldc = sum(log.(abs.(flow.c_scaling)))      # context logdet (not added to z)
     logdet = fill(Float32(ld), size(z, 2))
 
     for blk in flow.blocks
-        z, ld_blk = blk(z, cscaled; inverse=false)
+        z, ld_blk = blk(z, cscaled; inverse=false, clamp_lim=flow.clamp_lim)
         logdet = logdet .+ ld_blk
     end
     return z, logdet
@@ -164,7 +168,7 @@ function decode(flow::ConditionalFlow, z::AbstractVecOrMat, c::AbstractVecOrMat)
     logdet = zeros(eltype(x), size(x, 2))
     cscaled = flow.c_scaling .* carr
     for blk in Iterators.reverse(flow.blocks)
-        x, ld_blk = blk(x, cscaled; inverse=true)
+        x, ld_blk = blk(x, cscaled; inverse=true, clamp_lim=flow.clamp_lim)
         logdet = logdet .+ ld_blk
     end
 

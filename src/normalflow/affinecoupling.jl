@@ -107,7 +107,7 @@ function AffineCouplingGLU(mask::AbstractVector{Bool}, x_dim::Integer, ctx_dim::
 end
 
 """
-    (m::AffineCouplingGLU)(x, c; inverse=false)
+    (m::AffineCouplingGLU)(x, c; inverse=false, clamp_lim=3.0)
 
 Apply the affine coupling transform (forward or inverse) with context.
 
@@ -119,12 +119,13 @@ Apply the affine coupling transform (forward or inverse) with context.
 - `inverse=false` : if `false`, compute forward (encode) `y = f(x,c)` and return
   `(y, logdet)`; if `true`, compute inverse (decode) `x = f^{-1}(y,c)` and return
   `(x, -logdet)`
+- `clamp_lim`.    : limit on log-saturation of scaling part of affine coupling 
 
 # Returns
 A tuple `(y_or_x, logdet_vec)` where `logdet_vec` is a length-`B` vector of
 per-sample log-absolute-determinants.
 """
-function (m::AffineCouplingGLU)(x::AbstractArray, c::AbstractArray; inverse::Bool=false)
+function (m::AffineCouplingGLU)(x::AbstractArray, c::AbstractArray; inverse::Bool=false, clamp_lim=3.0)
     D, B = size(x)
     @assert size(c, 2) == B "context batch must match x batch"
     @assert size(c, 1) == m.ctx_dim "context feature size mismatch"
@@ -136,7 +137,7 @@ function (m::AffineCouplingGLU)(x::AbstractArray, c::AbstractArray; inverse::Boo
 
     # Conditioner input is [x_pass; c]
     h = vcat(xp, c)
-    log_s = softclamp(m.s_net(h))
+    log_s = softclamp(m.s_net(h), limit=clamp_lim)
     t     = m.t_net(h)
 
     if !inverse

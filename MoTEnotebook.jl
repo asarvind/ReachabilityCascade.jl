@@ -55,16 +55,16 @@ function TBMoE(control_dim::Integer, context_dim::Integer, property_dim::Integer
 	@assert num_experts >= 3 "at least 3 experts are required"
 
 	# construct top_expert
-	top_expert = ConditionalFlow(property_dim+1, context_dim, x_scaling=vcat(property_scale, 1.0), c_scaling=context_scale)
+	top_expert = ConditionalFlow(property_dim+1, context_dim; x_scaling=vcat(property_scale, 1.0), c_scaling=context_scale, kwargs...)
 
 	# construct middle experts
 	mid_experts = [
-		ConditionalFlow(property_dim, context_dim+property_dim, x_scaling=property_scale, c_scaling=vcat(context_scale, property_scale)) 
+		ConditionalFlow(property_dim, context_dim+property_dim; x_scaling=property_scale, c_scaling=vcat(context_scale, property_scale), kwargs...) 
 		for _ in 1:(num_experts-2)
 	]
 
 	# contruct bottom expert 
-	bot_expert = ConditionalFlow(control_dim, context_dim+property_dim, x_scaling=control_scale, c_scaling=vcat(context_scale, property_scale))	
+	bot_expert = ConditionalFlow(control_dim, context_dim+property_dim; x_scaling=control_scale, c_scaling=vcat(context_scale, property_scale), kwargs...)	
 
 	return TBMoE(control_dim, context_dim, property_dim, top_expert, mid_experts, bot_expert)
 end
@@ -76,12 +76,13 @@ function (moe::TBMoE)(context::Vector{<:Real}, latent::AbstractMatrix{<:Real})
 
 	# results of top expert
 	top_res = moe.top_expert(latent[1:(moe.property_dim+1), end], context, inverse=true)[1]
-	t = min(top_res[end], 2^(length(moe.mid_experts)))
+	t = top_res[end]
+	t_sat = max(min(t, 2^(length(moe.mid_experts)+1)-1), 2)
 	property = top_res[1:(end-1)]
 	top_res = copy(vec(property))
 
 	# result of middle experts
-	idx = Int(floor(log2(max(t, 2))))
+	idx = Int(floor(log2(t_sat)))
 	mid_res = Vector{Real}[]
 	for i in idx:-1:1
 		property = moe.mid_experts[i](latent[1:moe.property_dim, i+1], vcat(context, property), inverse=true)[1]
@@ -127,7 +128,7 @@ function control_fn(strj::AbstractMatrix{<:Real}, utrj::AbstractMatrix{<:Real})
 end
 
 # ╔═╡ c60da8a4-62ce-4314-a91a-51d453cf134a
-function train(::Type{TBMoE}, control_fn::Function, context_fn::Function, property_fn::Function, num_experts::Integer, data::AbstractVector; maxiter::Integer=1, sampling_period::Integer=1, optimizer=Flux.OptimiserChain(Flux.ClipNorm(), Flux.Adam()), batch_size=200, save_period=60, savefile::String="", kwargs...)
+function train(::Type{TBMoE}, control_fn::Function, context_fn::Function, property_fn::Function, num_experts::Integer, data::AbstractVector; maxiter::Integer=1, sampling_period::Integer=1, optimizer=Flux.OptimiserChain(Flux.ClipGrad(), Flux.Adam()), batch_size=200, save_period=60, savefile::String="", kwargs...)
 	
 	# control dimension
 	strj, utrj = data[1].state_trajectory, data[1].input_signal
@@ -153,8 +154,8 @@ function train(::Type{TBMoE}, control_fn::Function, context_fn::Function, proper
 	# set up optimizer
 	opt_state = Flux.setup(optimizer, moe)
 
-	if maxiter < length(data)
-		@warn "Number of gradient descent steps is smaller than lenght of the data.  Consider changing the `maxiter` keyword assignment.  The default is set to just 1 for safety reasons."
+	if maxiter == 1
+		@warn "The default of maximum iterations (`maxiter`) is set to just 1 for safety reasons.  Consider changing it to a number higher than data length."
 	end
 
 	# top expert context and sample batches 
@@ -210,7 +211,7 @@ function train(::Type{TBMoE}, control_fn::Function, context_fn::Function, proper
 
 		# compute gradient 
 		top_grads = Flux.gradient(moe) do model
-			ld, z = model.top_expert(top_smp_batch, top_ctx_batch)
+			z, ld = model.top_expert(top_smp_batch, top_ctx_batch)
 			(0.5*sum(z.^2) - sum(ld)) /length(ld)
 		end
 
@@ -220,11 +221,11 @@ function train(::Type{TBMoE}, control_fn::Function, context_fn::Function, proper
 		# sort batches
 		top_ll = loglikelihoods(moe.top_expert, top_smp_batch, top_ctx_batch)
 		top_idx = sortperm(top_ll)
-		top_smp_batch = top_smp_batch[:, 1:min(batch_size, size(top_smp_batch, 2))]
-		top_ctx_batch = top_ctx_batch[:, 1:min(batch_size, size(top_ctx_batch, 2))]
+		top_smp_batch = top_smp_batch[:, top_idx[1:min(batch_size, size(top_smp_batch, 2))]]
+		top_ctx_batch = top_ctx_batch[:, top_idx[1:min(batch_size, size(top_ctx_batch, 2))]]
 
 		# iterate over each middle expert
-		Threads.@threads for i in 1:length(moe.mid_experts)		
+		for i in 1:length(moe.mid_experts)		
 			# extend middle expert batches 
 			mid_data = [
 				this_bisect(strj, utrj, st, t)
@@ -241,7 +242,7 @@ function train(::Type{TBMoE}, control_fn::Function, context_fn::Function, proper
 
 			# calculate gradient
 			mid_grads = Flux.gradient(moe) do model 
-				ld, z = model.mid_experts[i](mid_smp_batches[i], mid_ctx_batches[i])
+				z, ld = model.mid_experts[i](mid_smp_batches[i], mid_ctx_batches[i])
 				(0.5*sum(z.^2) - sum(ld)) /length(ld)
 			end
 
@@ -251,8 +252,8 @@ function train(::Type{TBMoE}, control_fn::Function, context_fn::Function, proper
 			# sort mid batches
 			mid_ll = loglikelihoods(moe.mid_experts[i], mid_smp_batches[i], mid_ctx_batches[i])
 			mid_idx = sortperm(mid_ll)
-			mid_smp_batches[i] = mid_smp_batches[i][:, 1:min(batch_size, size(mid_smp_batches[i], 2))]
-			mid_ctx_batches[i] = mid_ctx_batches[i][:, 1:min(batch_size, size(mid_ctx_batches[i], 2))]			
+			mid_smp_batches[i] = mid_smp_batches[i][:, mid_idx[1:min(batch_size, size(mid_smp_batches[i], 2))]]
+			mid_ctx_batches[i] = mid_ctx_batches[i][:, mid_idx[1:min(batch_size, size(mid_ctx_batches[i], 2))]]			
 		end
 
 		# extend bottom expert
@@ -274,15 +275,15 @@ function train(::Type{TBMoE}, control_fn::Function, context_fn::Function, proper
 
 		# calculate gradient
 		bot_grads = Flux.gradient(moe) do model
-			ld, z = model.bot_expert(bot_smp_batch, bot_ctx_batch)
+			z, ld = model.bot_expert(bot_smp_batch, bot_ctx_batch)
 			(0.5*sum(z.^2) - sum(ld)) /length(ld)
 		end
 
 		# sort bottom batch
 		bot_ll = loglikelihoods(moe.bot_expert, bot_smp_batch, bot_ctx_batch)
 		bot_idx = sortperm(bot_ll)
-		bot_smp_batch = bot_smp_batch[:, 1:min(batch_size, size(bot_smp_batch, 2))]
-		bot_ctx_batch = bot_ctx_batch[:, 1:min(batch_size, size(bot_ctx_batch, 2))]
+		bot_smp_batch = bot_smp_batch[:, bot_idx[1:min(batch_size, size(bot_smp_batch, 2))]]
+		bot_ctx_batch = bot_ctx_batch[:, bot_idx[1:min(batch_size, size(bot_ctx_batch, 2))]]
 
 		# update bottom expert
 		Flux.update!(opt_state, moe, bot_grads[1])
@@ -320,19 +321,30 @@ end
 # ╔═╡ ac48c4d9-2ec7-4b2d-8142-a2447769ca92
 let
 	data = JLD2.load("data/car/trajectories.jld2", "data")
-
+	ov_idx = [d.state_trajectory[1, end] - d.state_trajectory[8, end] > 0.0 for d in data]	
+	ov_data = data[ov_idx]
+	
 	ds = discrete_vehicles(0.25) 
 
-	idx = rand(1:length(data))
-	strj, utrj = data[idx].state_trajectory, data[idx].input_signal
-
-	moe = TBMoE(2, 14, 21, num_experts=2+5)
-
-	moe(rand(14), rand(22, length(moe.mid_experts)+2))
+	idx = rand(1:length(ov_data))
+	strj, utrj = ov_data[idx].state_trajectory, data[idx].input_signal
 
 	savefile = "data/car/tbmoe/ann.jld2"
 
-	@time train(TBMoE, control_fn, context_fn, property_fn, 6, data; sampling_period=4, maxiter=20, savefile=savefile, save_period=60.0, hidden=128)
+	control_scale = 0.1*[5.0, 1.0]
+
+	context_scale = 0.1*ones(14)
+	context_scale[[3, 5, 6, 7]] .*= 5.0
+
+	property_scale = 0.1*ones(21)
+	property_scale[[3, 5, 6, 7, 17, 19, 20, 21]] *= 5.0
+
+	optimizer=Flux.OptimiserChain(Flux.ClipNorm(), Flux.Adam(1e-3))
+
+	@time moe = train(TBMoE, control_fn, context_fn, property_fn, 6, ov_data; sampling_period=4, maxiter=000, savefile=savefile, save_period=60.0, hidden=256, context_scale=context_scale, property_scale=property_scale, control_scale=control_scale, optimizer=optimizer, clamp_lim=1.0, n_blocks=6)
+
+
+	moe(context_fn(strj[:, 1:end], utrj[:, 1:end]), randn(22, 6)), strj[:, 1]
 end
 
 # ╔═╡ Cell order:

@@ -1,7 +1,7 @@
 # ============================ Utilities =====================================
 
 """
-    softclamp(x; limit=3.0f0)
+    softclamp(x; limit=2.0f0)
 
 Apply a smooth clamp `limit * tanh(x/limit)` elementwise to keep values within
 `[-limit, limit]`. Useful for stabilizing predicted log-scales.

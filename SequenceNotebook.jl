@@ -208,7 +208,7 @@ function train(::Type{SliceNet}, property_fn::Function, dataargs::AbstractVector
 				x = mid_batch.x[:, sortid_mid[1:mid_bs]],
 				ctx = mid_batch.ctx[:, sortid_mid[1:mid_bs]]
 			)
-			
+
 			iter += 1
 		end
 	end

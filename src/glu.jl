@@ -77,13 +77,19 @@ The network has `n_glu` GLU blocks followed by a final linear `Dense` layer
 `Chain` consisting of `[GLU, ..., GLU, Dense]`.
 """
 function glu_mlp(in_dim::Integer, hidden::Integer, out_dim::Integer;
-                 n_glu::Integer=2, act=Flux.σ, bias::Bool=true)
+                 n_glu::Integer=2, act=Flux.σ, bias::Bool=true, zero_init::Bool=false)
     layers = Any[]
     d = in_dim
     for _ in 1:max(n_glu, 0)
         push!(layers, GLU(d => hidden; act=act, bias=bias))
         d = hidden
     end
-    push!(layers, Dense(d, out_dim; bias=bias))
+    
+    if zero_init
+        push!(layers, Dense(zeros(Float32, out_dim, d)))
+    else
+        push!(layers, Dense(d, out_dim; bias=bias))
+    end
+
     return Chain(layers...)
 end

@@ -99,7 +99,7 @@ function AffineCouplingGLU(mask::AbstractVector{Bool}, x_dim::Integer, ctx_dim::
     trans_idx = findall(!, mask)
     Dp = length(pass_idx)
     in_cond = Dp + ctx_dim
-    s_net = glu_mlp(in_cond, hidden, length(trans_idx); n_glu=n_glu, bias=bias)
+    s_net = glu_mlp(in_cond, hidden, length(trans_idx); n_glu=n_glu, zero_init=true)
     t_net = glu_mlp(in_cond, hidden, length(trans_idx); n_glu=n_glu, bias=bias)
     perm = vcat(pass_idx, trans_idx)
     pl = Permute(perm)

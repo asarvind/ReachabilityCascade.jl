@@ -299,19 +299,14 @@ let
 
 	state_dim = length(state_scale)
 	property_dim = length(property_scale)
-	# sn = SliceNet(state_dim, property_dim, 1; state_scale=state_scale, property_scale=property_scale, clamp_lim=1.0)
 
 	times = [1, 2, 5, 11, 13]
 	states = strj[:, times]
 	context = [0.0]
 	properties = reduce(hcat, property_fn(strj[:, times[i]:times[i+1]]) for i in 1:(length(times)-1))
 
-	# sn(states, properties, times, context, randn(state_dim+2*property_dim, 5))
-
-	# sn(strj[:, 1], context, randn(state_dim+2*property_dim, 5), randn(state_dim+property_dim+1))
-
 	savefile = "data/car/seqgen/ann.jld2"
-	@time train(SliceNet, property_fn, ov_data; maxiter=100, batch_size=200, state_scale=state_scale, property_scale=property_scale, savefile=savefile)
+	@time sn = train(SliceNet, property_fn, ov_data; maxiter=10, batch_size=200, state_scale=state_scale, property_scale=property_scale, savefile=savefile)
 end
 
 # ╔═╡ Cell order:

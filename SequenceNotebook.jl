@@ -108,16 +108,28 @@ end
 end
 
 # ╔═╡ 3a5df80f-0062-4d6b-b187-4efb1b1de950
-function train(::Type{SliceNet}, property_fn::Function, dataargs::AbstractVector...; maxiter::Integer=1, batch_size::Integer=100, optimiser=Flux.OptimiserChain(Flux.ClipNorm(), Flux.Adam()), kwargs...)
-	# construct slice net 
-	state_dim = size(dataargs[1][1].state_trajectory, 1)
-	property_dim = length(property_fn(dataargs[1][1].state_trajectory))
-	if hasproperty(dataargs[1][1], :context)
-		context_dim = length(dataargs[1][1].context)
-	else
-		context_dim = 1
+function train(::Type{SliceNet}, property_fn::Function, dataargs::AbstractVector...; maxiter::Integer=max((length.(dataargs))...), batch_size::Integer=100, optimiser=Flux.OptimiserChain(Flux.ClipNorm(), Flux.Adam()), savefile::String="", loadfile::String="savefile", save_period::Real=60, kwargs...)
+	# specify arguments for constructing slicenet
+	if isfile(loadfile) # if arguments are already stored
+		model_state = JLD2.load(loadfile, "model_state")
+		this_args = JLD2.load(loadfile, "args")
+		this_kwargs = JLD2.load(loadfile, "kwargs")
+	else # create new arguments from function specification
+		state_dim = size(dataargs[1][1].state_trajectory, 1)
+		property_dim = length(property_fn(dataargs[1][1].state_trajectory))
+		if hasproperty(dataargs[1][1], :context)
+			context_dim = length(dataargs[1][1].context)
+		else
+			context_dim = 1
+		end
+		this_args = (state_dim, property_dim, context_dim)
+		this_kwargs = kwargs
 	end
-	sn = SliceNet(state_dim, property_dim, context_dim; kwargs...)
+	# construct the neural network
+	sn = SliceNet(this_args...; this_kwargs...)
+	if isfile(loadfile)
+		Flux.loadmodel!(sn, model_state)
+	end
 	
 	# initialize batch for terminal state and time estimator
 	term_batch = (
@@ -135,6 +147,7 @@ function train(::Type{SliceNet}, property_fn::Function, dataargs::AbstractVector
 	opt_state = Flux.setup(optimiser, sn)
 
 	iter = 0
+	start_time = time()
 	while iter < maxiter
 		for data in dataargs
 			id = (iter % length(data)) + 1
@@ -208,9 +221,30 @@ function train(::Type{SliceNet}, property_fn::Function, dataargs::AbstractVector
 				x = mid_batch.x[:, sortid_mid[1:mid_bs]],
 				ctx = mid_batch.ctx[:, sortid_mid[1:mid_bs]]
 			)
-
-			iter += 1
 		end
+		iter += 1
+
+		if !isempty(savefile) && time() - start_time > save_period
+			JLD2.save(
+				savefile,
+				Dict(
+					"model_state"=>Flux.state(sn),
+					"args"=>this_args,
+					"kwargs"=>this_kwargs
+				)
+			)
+		end
+	end
+
+	if !isempty(savefile)
+		JLD2.save(
+			savefile,
+			Dict(
+				"model_state"=>Flux.state(sn),
+				"args"=>this_args,
+				"kwargs"=>this_kwargs
+			)
+		)
 	end
 	
 	return sn
@@ -276,7 +310,8 @@ let
 
 	# sn(strj[:, 1], context, randn(state_dim+2*property_dim, 5), randn(state_dim+property_dim+1))
 
-	train(SliceNet, property_fn, data, maxiter=10, batch_size=5, state_scale=state_scale, property_scale=property_scale)
+	savefile = "data/car/seqgen/ann.jld2"
+	@time train(SliceNet, property_fn, ov_data; maxiter=100, batch_size=200, state_scale=state_scale, property_scale=property_scale, savefile=savefile)
 end
 
 # ╔═╡ Cell order:

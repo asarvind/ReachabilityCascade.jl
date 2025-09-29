@@ -64,7 +64,7 @@ end
                     n_blocks::Integer=6, hidden::Integer=128,
                     n_glu::Integer=2, bias::Bool=true,
                     x_scaling::AbstractVector{<:Real}=ones(Float32, x_dim),
-                    c_scaling::AbstractVector{<:Real}=ones(Float32, ctx_dim),
+                    c_scaling::AbstractVector{<:Real}=ones(Float32, ctx_dim)),
                     clamp_lim::Real)
 
 Build a conditional normalizing flow with GLU-based affine couplings and fixed,

@@ -23,7 +23,7 @@ _maybe_vec(A::AbstractMatrix, wasvec::Bool) = wasvec ? vec(A) : A
 
 # ------------------------------------------------------------------
 # A small complex MLP for the lifting map: g(x) : C^d -> C^(ℓ-d)
-# We reuse ComplexGLUFlow.ComplexDense / CxGLUBlock
+# We reuse ComplexGLUFlow.ComplexDense / CxMLP
 # ------------------------------------------------------------------
 
 """
@@ -38,12 +38,12 @@ struct LiftMLP
 end
 @layer LiftMLP
 
-function LiftMLP(d_in::Integer, d_out::Integer; hidden::Integer=256, depth::Integer=2,
-                 act=identity, ln::Bool=false)
+function LiftMLP(d_in::Integer, d_out::Integer; hidden::Integer=256, depth::Integer=0,
+                 act=leakyrelu, ln::Bool=false)
     layers = Any[]
     dcur = d_in
     for _ in 1:depth
-        push!(layers, ComplexGLUFlow.CxGLUBlock(dcur, hidden; ln=ln, φ=act))
+        push!(layers, ComplexGLUFlow.CxMLP(dcur, hidden; ln=ln, act=act))
         dcur = hidden
     end
     proj = ComplexGLUFlow.ComplexDense(dcur, d_out)
@@ -93,7 +93,7 @@ end
 
 function LiftingFlow(d::Integer, ℓ::Integer; ctx_dim::Integer=0, num_blocks::Integer=4,
                      hidden::Integer=256, depth::Integer=2,
-                     lift_hidden::Integer=256, lift_depth::Integer=2,
+                     lift_hidden::Integer=256, lift_depth::Integer=0,
                      lift_act=identity, clamp::Real=3.0, ln::Bool=false,
                      seed=nothing)
     @assert ℓ > d "Latent dimension ℓ must be greater than sample dimension d."

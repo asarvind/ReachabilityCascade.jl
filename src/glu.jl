@@ -82,6 +82,7 @@ function glu_mlp(in_dim::Integer, hidden::Integer, out_dim::Integer;
     d = in_dim
     for _ in 1:max(n_glu, 0)
         push!(layers, GLU(d => hidden; act=act, bias=bias))
+        push!(layers, Dense(hidden=>hidden, leakyrelu))
         d = hidden
     end
     

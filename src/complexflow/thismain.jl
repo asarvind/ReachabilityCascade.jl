@@ -1,9 +1,9 @@
-# Complex-Conditioned Invertible Flow with GLU Couplings (Julia/Flux)
+# Complex-Conditioned Invertible Flow with MLP Couplings (Julia/Flux)
 # ------------------------------------------------------------------
 # Invertible flows over *complex-valued* vectors with affine coupling layers and
-# GLU-based conditioner networks. Optionally conditioned on a (real) context
-# vector. This version uses **native complex weights** via Flux `Dense(W, b, σ)`
-# where `W` and `b` are complex arrays.
+# **MLP-based** conditioner networks (no GLUs). Optionally conditioned on a (real)
+# context vector. Uses **native complex weights** via Flux `Dense(W, b, σ)` where
+# `W` and `b` are complex arrays.
 #
 # ✅ Deterministic encode/decode only (no log-determinants)
 # ✅ Uses `Flux.@layer`
@@ -13,9 +13,10 @@
 # ✅ **No in-place mutation** (Zygote-friendly)
 #
 # Public API
-#   flow = ComplexFlow(d; ctx_dim=0, num_blocks=4, hidden=128, depth=2, clamp=3.0, ln=false, seed=nothing)
+#   flow = ComplexFlow(d; ctx_dim=0, num_blocks=4, hidden=128, depth=2, clamp=3.0, ln=false, act=leakyrelu, seed=nothing)
 #   Y = encode(flow, X[, C])    # X: (d,) or (d,N) <:Number ;  C: (ctx_dim,) or (ctx_dim,N) <:Real (optional)
 #   X = decode(flow, Y[, C])    # Y: (d,) or (d,N) <:Number
+
 
 # ------------------------------------------------------------------
 # Small shape helpers to support vectors or matrices uniformly
@@ -57,51 +58,25 @@ end
 (c::ComplexDense)(X::AbstractVecOrMat{<:Number}) = c.dense(X)
 
 # ------------------------------------------------------------------
-# GLU Block (complex features, real gate) — no in-place ops
+# Simple Complex MLP (no GLU)
 # ------------------------------------------------------------------
 
-struct CxGLUBlock
-    Wy::ComplexDense
-    Wg::ComplexDense
-    ln::Union{LayerNorm, Nothing}
-    φ::Function
-end
-@layer CxGLUBlock
-
-function CxGLUBlock(d_in::Integer, d_out::Integer; ln::Bool=false, φ = identity)
-    Wy = ComplexDense(d_in, d_out)
-    Wg = ComplexDense(d_in, d_out)
-    ln_layer = ln ? LayerNorm(d_out) : nothing
-    return CxGLUBlock(Wy, Wg, ln_layer, φ)
-end
-
-function (g::CxGLUBlock)(X::AbstractVecOrMat{<:Number})
-    Y = g.Wy(X)
-    G = g.Wg(X)
-    if g.ln !== nothing
-        Yr = g.ln(real.(Y))
-        Yi = g.ln(imag.(Y))
-        Y  = complex.(Yr, Yi)
-    end
-    gate = sigmoid.(real.(G))
-    return g.φ.(Y) .* gate
-end
-
-# ------------------------------------------------------------------
-# GLU Network — no in-place ops
-# ------------------------------------------------------------------
-
-struct CxGLUNet
+struct CxMLP
     layers::Vector{Any}
     proj::ComplexDense
 end
-@layer CxGLUNet
+@layer CxMLP
 
-function CxGLUNet(in_dim::Integer, out_dim::Integer; hidden::Integer=256, depth::Integer=2, ln::Bool=false, zero_init::Bool=false)
+function CxMLP(in_dim::Integer, out_dim::Integer; hidden::Integer=256, depth::Integer=2,
+               act = leakyrelu, ln::Bool=false, zero_init::Bool=false)
     layers = Any[]
     dcur = in_dim
     for _ in 1:depth
-        push!(layers, CxGLUBlock(dcur, hidden; ln=ln))
+        # optional LayerNorm applies to real/imag separately
+        push!(layers, ComplexDense(dcur, hidden; act=act))
+        if ln
+            push!(layers, x -> complex.(LayerNorm(hidden)(real.(x)), LayerNorm(hidden)(imag.(x))))
+        end
         dcur = hidden
     end
     if zero_init
@@ -111,10 +86,10 @@ function CxGLUNet(in_dim::Integer, out_dim::Integer; hidden::Integer=256, depth:
     else
         proj = ComplexDense(dcur, out_dim)
     end
-    return CxGLUNet(layers, proj)
+    return CxMLP(layers, proj)
 end
 
-function (net::CxGLUNet)(X::AbstractVecOrMat{<:Number})
+function (net::CxMLP)(X::AbstractVecOrMat{<:Number})
     H = X
     for l in net.layers
         H = l(H)
@@ -123,14 +98,14 @@ function (net::CxGLUNet)(X::AbstractVecOrMat{<:Number})
 end
 
 # ------------------------------------------------------------------
-# Affine Coupling with GLU conditioner — no in-place ops
+# Affine Coupling with MLP conditioner — no in-place ops
 # ------------------------------------------------------------------
 
 struct AffineCouplingGLU
     mask::Vector{Float32}
     x_dim::Int
     ctx_dim::Int
-    conditioner::CxGLUNet
+    conditioner::CxMLP
     clamp::Float32
     scale_from_mean::Bool
 end
@@ -139,21 +114,40 @@ end
 function AffineCouplingGLU(mask::AbstractVector{<:Real}, x_dim::Integer;
                            ctx_dim::Integer,
                            hidden::Integer=256, depth::Integer=2,
-                           clamp::Real=3.0, ln::Bool=false,
+                           clamp::Real=3.0, ln::Bool=false, act = leakyrelu,
                            scale_from_mean::Bool=true)
     @assert length(mask) == x_dim
     maskf = Float32.(mask)
     nT = count(==(0f0), maskf)
     in_dim = x_dim + ctx_dim
     # For affine coupling: output 2*nT; scaling head starts at zeros (identity)
-    conditioner = CxGLUNet(in_dim, 2*nT; hidden=hidden, depth=depth, ln=ln, zero_init=true)
+    conditioner = CxMLP(in_dim, 2*nT; hidden=hidden, depth=depth, ln=ln, act=act, zero_init=true)
     return AffineCouplingGLU(maskf, x_dim, ctx_dim, conditioner, Float32(clamp), scale_from_mean)
 end
 
 softclamp(x, α) = α * tanh.(x / α)
 
-# helper to build a one-hot selector matrix (no mutation)
-_selector_matrix(idxs::Vector{Int}, d::Int) = [i == idxs[j] ? one(Float32) : 0f0 for i in 1:d, j in 1:length(idxs)]
+# Row-wise scatter helper without mutation.
+# Places the rows of `Ssmall` (size nT×N) into a (d×N) matrix at the indices where `mask==0`.
+# If there are no transformed rows (nT==0), returns a d×N zeros matrix.
+function _scatter_rows(Ssmall, mask::AbstractVector{<:Real}, d::Integer)
+    N = size(Ssmall, 2)
+    sel = mask .== 0f0
+    if any(sel)
+        idxmap = cumsum(Int.(sel))
+        # Ensure each picked row is a 1×N matrix (NOT a Vector) by slicing with a 1-row range
+        blocks = map(1:d) do i
+            if sel[i]
+                @view Ssmall[idxmap[i]:idxmap[i], :]
+            else
+                zeros(eltype(Ssmall), 1, N)
+            end
+        end
+        return reduce(vcat, blocks)
+    else
+        return zeros(eltype(Ssmall), d, N)
+    end
+end
 
 function (ac::AffineCouplingGLU)(X::AbstractVecOrMat{<:Number}, C::AbstractVecOrMat{<:Real})
     Xwasvec = _isvec(X); Xm = _to_mat(X); Cm = _to_mat(C)
@@ -176,11 +170,8 @@ function (ac::AffineCouplingGLU)(X::AbstractVecOrMat{<:Number}, C::AbstractVecOr
     S = ac.scale_from_mean ? (S .- mean(S; dims=2)) : S
     S = softclamp(S, ac.clamp)
 
-    # Scatter without mutation: build selector matrix E and multiply
-    idxT = findall(x -> x == 0f0, ac.mask)
-    E    = _selector_matrix(idxT, ac.x_dim)                # (d, nT)
-    Sf   = E * S                                           # (d, N)
-    Tf   = E * T                                           # (d, N)
+    Sf = _scatter_rows(S, ac.mask, ac.x_dim)
+    Tf = _scatter_rows(T, ac.mask, ac.x_dim)
 
     Y = Xpass .+ (1 .- M) .* ( Xm .* exp.(Sf) .+ Tf )
     return _maybe_vec(Y, Xwasvec)
@@ -207,10 +198,8 @@ function inverse(ac::AffineCouplingGLU, Y::AbstractVecOrMat{<:Number}, C::Abstra
     S = ac.scale_from_mean ? (S .- mean(S; dims=2)) : S
     S = softclamp(S, ac.clamp)
 
-    idxT = findall(x -> x == 0f0, ac.mask)
-    E    = _selector_matrix(idxT, ac.x_dim)
-    Sf   = E * S
-    Tf   = E * T
+    Sf = _scatter_rows(S, ac.mask, ac.x_dim)
+    Tf = _scatter_rows(T, ac.mask, ac.x_dim)
 
     X = Ypass .+ (1 .- M) .* ( (Ym .- Tf) .* exp.(-Sf) )
     return _maybe_vec(X, Ywasvec)
@@ -250,7 +239,7 @@ end
 
 function ComplexFlow(d::Integer; ctx_dim::Integer=0, num_blocks::Integer=4,
                      hidden::Integer=256, depth::Integer=2, clamp::Real=3.0,
-                     ln::Bool=false, seed=nothing)
+                     ln::Bool=false, act=leakyrelu, seed=nothing)
     if seed !== nothing
         Random.seed!(seed)
     end
@@ -260,7 +249,7 @@ function ComplexFlow(d::Integer; ctx_dim::Integer=0, num_blocks::Integer=4,
         mask = isodd(b) ? m1 : m2
         push!(layers, AffineCouplingGLU(mask, d; ctx_dim=ctx_dim,
                                         hidden=hidden, depth=depth,
-                                        clamp=clamp, ln=ln))
+                                        clamp=clamp, ln=ln, act=act))
         push!(layers, PermuteChannels(d))
     end
     pop!(layers)

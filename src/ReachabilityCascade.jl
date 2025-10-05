@@ -39,21 +39,11 @@ end
 using .NormalizingFlow: ConditionalFlow, loglikelihoods
 export ConditionalFlow, loglikelihoods
 
-module ComplexGLUFlow
-    using Flux
-    using Flux: Dense, LayerNorm, glorot_uniform, sigmoid, @layer
+module TrajectoryModels
+    using Flux, Random
     using Statistics
-    using Random
-    include("complexflow/thismain.jl")
-end
-
-module ComplexLiftFlow
-    using Flux
-    using Flux: Dense, LayerNorm, sigmoid, @layer
-    using Random
-    using Statistics
-    import ..ComplexGLUFlow  # sibling module under the same parent (e.g., Main)  # assumes ComplexGLUFlow is defined in the same Julia session 
-    include("liftflow/thismain.jl")
+    import JLD2
+    include("trajectorydistribution/thismain.jl")
 end
 
 # module NeuralReachability

@@ -47,6 +47,17 @@ end
 using .GANModels: Gan, generator_forward, discriminator_forward, encoder_forward
 export Gan, generator_forward, discriminator_forward, encoder_forward
 
+module HierarchicalBehaviorCloning
+    using Flux
+    using ..GANModels: Gan, generator_forward, discriminator_forward, encoder_forward
+    include("HBC/hbcnet.jl")
+end
+using .HierarchicalBehaviorCloning: HierarchicalBehaviorCloner, task_forward,
+                                    intermediate_forward, intermediate_level_forward,
+                                    control_forward
+export HierarchicalBehaviorCloner, task_forward, intermediate_forward,
+       intermediate_level_forward, control_forward
+
 module TrajectoryModels
     using Flux, Random
     using Statistics

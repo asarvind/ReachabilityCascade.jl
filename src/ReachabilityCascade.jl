@@ -39,6 +39,14 @@ end
 using .NormalizingFlow: ConditionalFlow, loglikelihoods
 export ConditionalFlow, loglikelihoods
 
+module GANModels
+    using Flux
+    using ..GatedLinearUnits: glu_mlp
+    include("ganfiles/gan.jl")
+end
+using .GANModels: Gan, generator_forward, discriminator_forward
+export Gan, generator_forward, discriminator_forward
+
 module TrajectoryModels
     using Flux, Random
     using Statistics

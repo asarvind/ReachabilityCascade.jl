@@ -44,8 +44,8 @@ module GANModels
     using ..GatedLinearUnits: glu_mlp
     include("ganfiles/gan.jl")
 end
-using .GANModels: Gan, generator_forward, discriminator_forward
-export Gan, generator_forward, discriminator_forward
+using .GANModels: Gan, generator_forward, discriminator_forward, encoder_forward
+export Gan, generator_forward, discriminator_forward, encoder_forward
 
 module TrajectoryModels
     using Flux, Random

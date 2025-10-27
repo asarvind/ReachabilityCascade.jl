@@ -1,6 +1,6 @@
 using Flux
 using Random
-using ReachabilityCascade: Gan, generator_forward, discriminator_forward
+using ReachabilityCascade: Gan, generator_forward, discriminator_forward, encoder_forward
 
 """
     _as_matrix(x)
@@ -70,47 +70,62 @@ function HierarchicalBehaviorCloner(state_dim::Integer,
                                     control_gate=Flux.σ)
     @assert n_intermediate ≥ 1 "At least one intermediate GAN is required"
 
-    task_input_dim = state_dim + goal_dim + latent_dim
+    task_context_dim = state_dim + goal_dim
     task_output_dim = state_dim + 1
-    task_gan = Gan(task_input_dim, task_output_dim;
+    task_gan = Gan(latent_dim, task_context_dim, task_output_dim;
                    gen_hidden=task_hidden,
                    disc_hidden=task_hidden,
+                   enc_hidden=task_hidden,
                    n_glu_gen=task_glu,
                    n_glu_disc=task_glu,
+                   n_glu_enc=task_glu,
                    gen_gate=task_gate,
                    disc_gate=task_gate,
+                   enc_gate=task_gate,
                    generator_out=nothing,
                    discriminator_out=nothing,
+                   encoder_saturation=tanh,
                    generator_zero_init=false,
-                   discriminator_zero_init=false)
+                   discriminator_zero_init=false,
+                   encoder_zero_init=false)
 
-    intermediate_input_dim = 2 * state_dim + latent_dim
+    intermediate_context_dim = 2 * state_dim
     intermediate_output_dim = state_dim
-    intermediate_gans = [Gan(intermediate_input_dim, intermediate_output_dim;
+    intermediate_gans = [Gan(latent_dim, intermediate_context_dim, intermediate_output_dim;
                               gen_hidden=intermediate_hidden,
                               disc_hidden=intermediate_hidden,
+                              enc_hidden=intermediate_hidden,
                               n_glu_gen=intermediate_glu,
                               n_glu_disc=intermediate_glu,
+                              n_glu_enc=intermediate_glu,
                               gen_gate=intermediate_gate,
                               disc_gate=intermediate_gate,
+                              enc_gate=intermediate_gate,
                               generator_out=nothing,
                               discriminator_out=nothing,
+                              encoder_saturation=tanh,
                               generator_zero_init=false,
-                              discriminator_zero_init=false)
+                              discriminator_zero_init=false,
+                              encoder_zero_init=false)
                          for _ in 1:n_intermediate]
 
-    control_input_dim = 2 * state_dim + latent_dim
-    control_gan = Gan(control_input_dim, control_dim;
+    control_context_dim = 2 * state_dim
+    control_gan = Gan(latent_dim, control_context_dim, control_dim;
                       gen_hidden=control_hidden,
                       disc_hidden=control_hidden,
+                      enc_hidden=control_hidden,
                       n_glu_gen=control_glu,
                       n_glu_disc=control_glu,
+                      n_glu_enc=control_glu,
                       gen_gate=control_gate,
                       disc_gate=control_gate,
+                      enc_gate=control_gate,
                       generator_out=nothing,
                       discriminator_out=nothing,
+                      encoder_saturation=tanh,
                       generator_zero_init=false,
-                      discriminator_zero_init=false)
+                      discriminator_zero_init=false,
+                      encoder_zero_init=false)
 
     return HierarchicalBehaviorCloner(task_gan,
                                       intermediate_gans,
@@ -125,12 +140,17 @@ end
     task_forward(model, state, goal, latent)
 
 Forward pass through the task-level GAN, returning `(terminal_state, completion_time)`.
+The terminal state is produced as the current state plus a predicted delta.
 """
 function task_forward(model::HierarchicalBehaviorCloner, state, goal, latent)
-    input = _prepare_inputs(state, goal, latent)
-    output = generator_forward(model.task_gan, input)
-    terminal_state = output[1:model.state_dim, :]
+    state_f = Flux.f32(state)
+    goal_f = Flux.f32(goal)
+    latent_f = Flux.f32(latent)
+    context = _prepare_inputs(state_f, goal_f)
+    output = generator_forward(model.task_gan, context, latent_f)
+    delta_state = output[1:model.state_dim, :]
     completion_time = output[model.state_dim + 1, :]
+    terminal_state = state_f .+ delta_state
     return terminal_state, completion_time
 end
 
@@ -146,15 +166,19 @@ function intermediate_forward(model::HierarchicalBehaviorCloner,
                               terminal_state,
                               completion_time,
                               latent)
+    state_f = Flux.f32(state)
+    future_state = Flux.f32(terminal_state)
+    latent_f = Flux.f32(latent)
     n_levels = length(model.intermediate_gans)
     start_levels = _select_start_levels(completion_time, n_levels)
     predictions = Vector{Matrix{Float32}}(undef, n_levels)
-    future_state = copy(terminal_state)
     for i in reverse(1:n_levels)
         active = findall(start_levels .>= i)
         if !isempty(active)
-            input = _prepare_inputs(state[:, active], future_state[:, active], latent[:, active])
-            predicted = generator_forward(model.intermediate_gans[i], input)
+            current_state = state_f[:, active]
+            context = _prepare_inputs(current_state, future_state[:, active])
+            delta = generator_forward(model.intermediate_gans[i], context, latent_f[:, active])
+            predicted = current_state .+ delta
             future_state[:, active] = predicted
         end
         predictions[i] = copy(future_state)
@@ -174,11 +198,12 @@ function intermediate_level_forward(model::HierarchicalBehaviorCloner,
                                     target_state,
                                     latent)
     @assert 1 ≤ level ≤ length(model.intermediate_gans) "Level out of range"
-    current_state_m = _as_matrix(current_state)
-    target_state_m = _as_matrix(target_state)
-    latent_m = _as_matrix(latent)
-    input = _prepare_inputs(current_state_m, target_state_m, latent_m)
-    return generator_forward(model.intermediate_gans[level], input)
+    current_state_m = Flux.f32(_as_matrix(current_state))
+    target_state_m = Flux.f32(_as_matrix(target_state))
+    latent_m = Flux.f32(_as_matrix(latent))
+    context = _prepare_inputs(current_state_m, target_state_m)
+    delta = generator_forward(model.intermediate_gans[level], context, latent_m)
+    return current_state_m .+ delta
 end
 
 """
@@ -190,8 +215,8 @@ function control_forward(model::HierarchicalBehaviorCloner,
                          state,
                          next_state,
                          latent)
-    input = _prepare_inputs(state, next_state, latent)
-    return generator_forward(model.control_gan, input)
+    context = _prepare_inputs(state, next_state)
+    return generator_forward(model.control_gan, context, latent)
 end
 
 """
@@ -200,9 +225,9 @@ end
 Run the complete hierarchy and return a named tuple containing the control and auxiliary predictions.
 """
 function (model::HierarchicalBehaviorCloner)(state, goal, latent)
-    state_m = _as_matrix(state)
-    goal_m = _as_matrix(goal)
-    latent_m = _as_matrix(latent)
+    state_m = Flux.f32(_as_matrix(state))
+    goal_m = Flux.f32(_as_matrix(goal))
+    latent_m = Flux.f32(_as_matrix(latent))
     terminal_state, completion_time = task_forward(model, state_m, goal_m, latent_m)
     intermediate_states = intermediate_forward(model, state_m, terminal_state, completion_time, latent_m)
     first_step_state = intermediate_states[1]
@@ -213,16 +238,20 @@ function (model::HierarchicalBehaviorCloner)(state, goal, latent)
             intermediate_states=intermediate_states)
 end
 
-let latent_dim = 4, data_dim = 3, batch = 5
-    gan = Gan(latent_dim, data_dim; gen_hidden=16, disc_hidden=16,
+let latent_dim = 4, context_dim = 3, data_dim = 3, batch = 5
+    gan = Gan(latent_dim, context_dim, data_dim; gen_hidden=16, disc_hidden=16,
               generator_out=nothing, discriminator_out=nothing)
 
+    context = randn(Float32, context_dim, batch)
     z = randn(Float32, latent_dim, batch)
-    x_fake = generator_forward(gan, z)
+    x_fake = generator_forward(gan, context, z)
     @assert size(x_fake) == (data_dim, batch)
 
-    disc_scores = discriminator_forward(gan, x_fake)
+    disc_scores = discriminator_forward(gan, context, x_fake)
     @assert size(disc_scores, 2) == batch
+    z_rec = encoder_forward(gan, context, x_fake)
+    @assert size(z_rec) == (latent_dim, batch)
+    @assert all(abs.(z_rec) .<= 1f0 + 1f-4)
 
     println("GAN forward example ran successfully with batch size ", batch)
 end

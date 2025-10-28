@@ -1,10 +1,9 @@
 """
     Gan(latent_dim, context_dim, data_dim; kwargs...)
 
-Convenience container that wires conditional generator, discriminator, and encoder
-blocks built from `glu_mlp`. All networks accept a context vector alongside their
-primary input, and the encoder outputs lie inside the unit hyperrectangle via a
-saturating activation (default `tanh`).
+Conditional GAN with generator, discriminator, and encoder. The generator consumes
+`(context, latent)` pairs, the discriminator scores `(context, sample, latent)` tuples,
+and the encoder maps `(context, sample)` back to a latent inside the unit hyperrectangle.
 """
 struct Gan{G,D,E}
     generator::G
@@ -45,7 +44,7 @@ function Gan(latent_dim::Integer, context_dim::Integer, data_dim::Integer;
              generator_out::Union{Function,Nothing}=Flux.tanh,
              discriminator_out::Union{Function,Nothing}=Flux.σ,
              encoder_saturation::Function=tanh,
-             generator_zero_init::Bool=true,
+             generator_zero_init::Bool=false,
              discriminator_zero_init::Bool=false,
              encoder_zero_init::Bool=false)
     gen_input_dim = latent_dim + context_dim
@@ -53,7 +52,7 @@ function Gan(latent_dim::Integer, context_dim::Integer, data_dim::Integer;
                        n_glu=n_glu_gen, act=gen_gate, zero_init=generator_zero_init)
     generator = generator_out === nothing ? gen_core : Chain(gen_core, generator_out)
 
-    disc_input_dim = data_dim + context_dim
+    disc_input_dim = data_dim + context_dim + latent_dim
     disc_core = glu_mlp(disc_input_dim, disc_hidden, 1;
                         n_glu=n_glu_disc, act=disc_gate, zero_init=discriminator_zero_init)
     discriminator = discriminator_out === nothing ? disc_core : Chain(disc_core, discriminator_out)
@@ -65,6 +64,11 @@ function Gan(latent_dim::Integer, context_dim::Integer, data_dim::Integer;
     encoder = Chain(enc_core, encoder_tail)
 
     return Gan(generator, discriminator, encoder, latent_dim, context_dim, data_dim)
+end
+
+function Gan(generator::G, discriminator::D, encoder::E,
+             latent_dim::Integer, context_dim::Integer, data_dim::Integer) where {G,D,E}
+    return Gan{G,D,E}(generator, discriminator, encoder, latent_dim, context_dim, data_dim)
 end
 
 (gan::Gan)(context, latent) = generator_forward(gan, context, latent)
@@ -81,13 +85,13 @@ function generator_forward(gan::Gan, context, latent)
 end
 
 """
-    discriminator_forward(gan::Gan, context, samples)
+    discriminator_forward(gan::Gan, context, samples, latent)
 
-Evaluate the discriminator on context-conditioned samples. Supports batched input.
+Evaluate the discriminator on `(context, sample, latent)` tuples. Supports batched input.
 """
-function discriminator_forward(gan::Gan, context, samples)
-    input = _stack_inputs(context, samples)
-    @assert size(input, 1) == gan.context_dim + gan.data_dim "Discriminator input/context mismatch"
+function discriminator_forward(gan::Gan, context, samples, latent)
+    input = _stack_inputs(context, samples, latent)
+    @assert size(input, 1) == gan.context_dim + gan.data_dim + gan.latent_dim "Discriminator input mismatch"
     return gan.discriminator(input)
 end
 

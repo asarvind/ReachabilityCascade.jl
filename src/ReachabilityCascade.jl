@@ -43,9 +43,12 @@ module GANModels
     using Flux
     using ..GatedLinearUnits: glu_mlp
     include("ganfiles/gan.jl")
+    include("ganfiles/gan_training.jl")
 end
-using .GANModels: Gan, generator_forward, discriminator_forward, encoder_forward
-export Gan, generator_forward, discriminator_forward, encoder_forward
+using .GANModels: Gan, generator_forward, discriminator_forward, encoder_forward,
+                  gan_gradients, gradient_norm
+export Gan, generator_forward, discriminator_forward, encoder_forward,
+       gan_gradients, gradient_norm
 
 module HierarchicalBehaviorCloning
     using Flux

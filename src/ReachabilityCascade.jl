@@ -38,9 +38,10 @@ module NormalizingFlow
     include("normalflow/affinecoupling.jl")
     include("normalflow/conditionalflow.jl")
     include("normalflow/recurrentflow.jl")
+    include("normalflow/recurrentgradients.jl")
 end
-using .NormalizingFlow: ConditionalFlow, RecurrentConditionalFlow
-export ConditionalFlow, RecurrentConditionalFlow
+using .NormalizingFlow: ConditionalFlow, RecurrentConditionalFlow, recurrent_flow_gradients
+export ConditionalFlow, RecurrentConditionalFlow, recurrent_flow_gradients
 
 module GANModels
     using Flux

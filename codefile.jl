@@ -28,4 +28,10 @@ let rng = Random.MersenneTwister(42)
 
     @assert maximum(abs.(xr .- x)) < 1f-4
     println("Recurrent flow total logdet: ", recur_result.logdet)
+
+    grad_info = ReachabilityCascade.recurrent_flow_gradients(rcf, x, base_ctx, 4; num_lowest=2)
+    println("Detached recurrent loss: ", grad_info.loss)
+    if grad_info.hard_examples !== nothing
+        println("Lowest log-likelihoods: ", grad_info.hard_examples.loglikelihood)
+    end
 end

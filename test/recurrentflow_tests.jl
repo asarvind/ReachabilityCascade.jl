@@ -1,5 +1,5 @@
 using Test
-using ReachabilityCascade: ConditionalFlow, RecurrentConditionalFlow
+using ReachabilityCascade: ConditionalFlow, RecurrentConditionalFlow, recurrent_flow_gradients
 using ReachabilityCascade.NormalizingFlow: encode_recurrent, decode_recurrent, encode_recurrent_transitions
 
 @testset "Recurrent Conditional Flow" begin
@@ -41,4 +41,25 @@ using ReachabilityCascade.NormalizingFlow: encode_recurrent, decode_recurrent, e
     # transitions helper directly
     transitions_direct = encode_recurrent_transitions(rcf, x_mat, ctx_mat, steps)
     @test transitions_direct == transitions
+
+    old_mat = randn(Float32, x_dim, 2)
+    old_ctx = randn(Float32, base_ctx_dim, 2)
+    all_samples_combined = hcat(x_mat, old_mat)
+    all_context_combined = hcat(ctx_mat, old_ctx)
+    transitions_combined = encode_recurrent_transitions(rcf, all_samples_combined,
+                                                        all_context_combined, steps)
+
+    grad_result = recurrent_flow_gradients(rcf, x_mat, ctx_mat, steps;
+                                           old_samples=old_mat, old_context=old_ctx,
+                                           num_lowest=2)
+    @test grad_result.loss isa Real
+    @test grad_result.transitions == transitions_combined
+
+    @test !isempty(grad_result.grads)
+    hard = grad_result.hard_examples
+    @test hard !== nothing
+    @test size(hard.samples, 2) == 2
+    @test length(hard.step) == 2
+    @test all(1 <= s <= steps for s in hard.step)
+    @test all(diff(hard.loglikelihood) .>= 0)
 end

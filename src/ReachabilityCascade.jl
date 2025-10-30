@@ -38,10 +38,9 @@ module NormalizingFlow
     include("normalflow/affinecoupling.jl")
     include("normalflow/conditionalflow.jl")
     include("normalflow/recurrentflow.jl")
-    include("normalflow/examples.jl")
 end
-using .NormalizingFlow: ConditionalFlow, ConditionalFlowExamples, RecurrentConditionalFlow
-export ConditionalFlow, ConditionalFlowExamples, RecurrentConditionalFlow
+using .NormalizingFlow: ConditionalFlow, RecurrentConditionalFlow
+export ConditionalFlow, RecurrentConditionalFlow
 
 module GANModels
     using Flux

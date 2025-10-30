@@ -1,20 +1,31 @@
-using ReachabilityCascade: ConditionalFlowExamples
+using Random
+using ReachabilityCascade
 
-let examples = ConditionalFlowExamples
-    rt = examples.roundtrip()
-    @assert rt.max_reconstruction_error < 1f-4
-    println("Roundtrip example latent size: ", size(rt.latent))
+const NF = ReachabilityCascade.NormalizingFlow
 
-    scaled = examples.roundtrip_scaled()
-    @assert any(abs.(scaled.logdet) .> 0f0)
-    println("Scaled roundtrip logdet sample: ", scaled.logdet)
+let rng = Random.MersenneTwister(42)
+    x_dim, ctx_dim = 4, 2
+    flow = NF.ConditionalFlow(x_dim, ctx_dim; n_blocks=2, hidden=32, n_glu=2)
 
-    ss = examples.single_sample()
-    @assert length(ss.logdet) == 1
-    println("Single-sample example logdet: ", ss.logdet)
+    x = randn(rng, Float32, x_dim, 3)
+    c = randn(rng, Float32, ctx_dim, 3)
 
-    recur = examples.recurrent_roundtrip()
-    @assert recur.max_reconstruction_error < 1f-4
-    println("Recurrent example total logdet: ", recur.logdet)
-    println("Recurrent transitions recorded: ", length(recur.per_step_latents))
+    enc = flow(x, c)
+    decoded = flow(enc.latent, c; inverse=true)
+
+    @assert maximum(abs.(decoded .- x)) < 1f-4
+    println("Conditional flow roundtrip logdet sample: ", enc.logdet)
+
+    # Recurrent composition example
+    base_ctx_dim = 2
+    time_embed_dim = 2
+    recur_flow = NF.ConditionalFlow(x_dim, base_ctx_dim + time_embed_dim; n_blocks=2, hidden=32, n_glu=2)
+    rcf = NF.RecurrentConditionalFlow(recur_flow, base_ctx_dim)
+
+    base_ctx = randn(rng, Float32, base_ctx_dim, 3)
+    recur_result = NF.encode_recurrent(rcf, x, base_ctx, 4)
+    xr = NF.decode_recurrent(rcf, recur_result.latent, base_ctx, 4)
+
+    @assert maximum(abs.(xr .- x)) < 1f-4
+    println("Recurrent flow total logdet: ", recur_result.logdet)
 end

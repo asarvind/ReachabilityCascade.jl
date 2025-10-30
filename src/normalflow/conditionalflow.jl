@@ -120,7 +120,8 @@ per-sample log|det J|. Applies the non-diff scalings first.
 - `c::AbstractVecOrMat`   : Context array `(C,)` or `(C,B)`
 
 # Returns
-`(z, logdet)` where `z` is `(D, B)` and `logdet` is a length-`B` vector.
+Named tuple `(latent=z, logdet=logdet)` where `latent` is `(D, B)` and `logdet`
+is a length-`B` vector.
 """
 function encode(flow::ConditionalFlow, x::AbstractVecOrMat, c::AbstractVecOrMat)
     @assert size(x, 1) == flow.x_dim
@@ -138,7 +139,7 @@ function encode(flow::ConditionalFlow, x::AbstractVecOrMat, c::AbstractVecOrMat)
         z, ld_blk = blk(z, cscaled; inverse=false, clamp_lim=flow.clamp_lim)
         logdet = logdet .+ ld_blk
     end
-    return z, logdet
+    return (latent = z, logdet = logdet)
 end
 
 # ------------------------------- Decode --------------------------------------
@@ -146,9 +147,8 @@ end
 """
     decode(flow::ConditionalFlow, z::AbstractVecOrMat, c::AbstractVecOrMat)
 
-Inverse pass of the flow: map latent to data `x = f^{-1}(z,c)` and accumulate
-per-sample log|det J| contributed by the inverse mappings. Applies inverse
-scalings at the end.
+Inverse pass of the flow: map latent to data `x = f^{-1}(z,c)` while applying
+inverse scalings at the end. Log-determinant contributions are not returned.
 
 # Arguments
 - `flow::ConditionalFlow` : Conditional flow neural net
@@ -156,7 +156,7 @@ scalings at the end.
 - `c::AbstractVecOrMat`   : Context array `(C,)` or `(C,B)`
 
 # Returns
-`(x, logdet)` where `x` is `(D, B)` and `logdet` is a length-`B` vector.
+Decoded tensor `x` with shape `(D, B)`.
 """
 function decode(flow::ConditionalFlow, z::AbstractVecOrMat, c::AbstractVecOrMat)
     @assert size(z, 1) == flow.x_dim
@@ -165,18 +165,14 @@ function decode(flow::ConditionalFlow, z::AbstractVecOrMat, c::AbstractVecOrMat)
     carr = ndims(c) == 1 ? reshape(c, size(c,1), 1) : c
 
     x = zarr
-    logdet = zeros(eltype(x), size(x, 2))
     cscaled = flow.c_scaling .* carr
     for blk in Iterators.reverse(flow.blocks)
-        x, ld_blk = blk(x, cscaled; inverse=true, clamp_lim=flow.clamp_lim)
-        logdet = logdet .+ ld_blk
+        x, _ = blk(x, cscaled; inverse=true, clamp_lim=flow.clamp_lim)
     end
 
     # Invert fixed x_scaling last
     x = x ./ flow.x_scaling
-    ld = sum(log.(abs.(flow.x_scaling)))         # scalar
-    logdet = logdet .- Float32(ld)
-    return x, logdet
+    return x
 end
 
 """
@@ -186,42 +182,11 @@ Forward pass of the neural net for either encoding (`inverse=false`) or decoding
 (`inverse=true`). Handles vector or matrix inputs for convenience.
 
 # Returns
-`(y, logdet)` where `y` is the mapped tensor and `logdet` is a batch-length vector.
+- When `inverse=false`: named tuple `(latent, logdet)`
+- When `inverse=true` : decoded tensor `x`
 """
 function (flow::ConditionalFlow)(x::AbstractVecOrMat, c::AbstractVecOrMat; inverse::Bool=false)
     return inverse ? decode(flow, x, c) : encode(flow, x, c)
-end
-
-# ------------------------------- Likelihoods ---------------------------------
-"""
-    loglikelihoods(flow::ConditionalFlow, x::AbstractVecOrMat, c::AbstractVecOrMat;
-                   inverse::Bool=false)
-
-Compute **per-sample log-likelihoods** under a standard normal prior in latent
-space. Returns a length-`B` vector.
-
-- When `inverse=false` (default): encodes `x` to `z`, and returns
-  `log p(z) + log|det J|`.
-- When `inverse=true`: treats the input as *already latent* `z`, so it returns
-  only `log p(z)` (no Jacobian term), since `z` is in the prior space.
-
-`c` is scaled using `c_scaling` in the same way as the main encode/decode paths.
-"""
-function loglikelihoods(flow::ConditionalFlow, x::AbstractVecOrMat, c::AbstractVecOrMat;
-                        inverse::Bool=false)
-    if inverse
-        # x is actually z in latent space
-        z = ndims(x) == 1 ? reshape(x, size(x,1), 1) : x
-        D = size(z, 1)
-        ll = -0.5f0 .* sum(z.^2; dims=1) .- (D/2) .* log(2f0*pi)
-        return vec(ll)
-    else
-        z, logdet = flow(x, c)
-        D = size(z, 1)
-        ll_prior = -0.5f0 .* sum(z.^2; dims=1) .- (D/2) .* log(2f0*pi)
-        ll = vec(ll_prior) .+ logdet
-        return ll
-    end
 end
 
 # ============================ Example (optional) =============================
@@ -230,10 +195,6 @@ end
 # flow = ConditionalFlow(D, C; n_blocks=4, hidden=64, n_glu=2,
 #                        x_scaling=fill(2f0, D), c_scaling=fill(0.5f0, C))
 # x = randn(Float32, D, B); c = randn(Float32, C, B)
-# z, ld1 = encode(flow, x, c)
-# xr, ld2 = decode(flow, z, c)
+# out = encode(flow, x, c)
+# xr = decode(flow, out.latent, c)
 # @show maximum(abs.(xr .- x))
-# @show mean(ld1 .+ ld2)
-# ll = loglikelihoods(flow, x, c)
-# ll_from_latent = loglikelihoods(flow, z, c; inverse=true)
-# @show size(ll), size(ll_from_latent)

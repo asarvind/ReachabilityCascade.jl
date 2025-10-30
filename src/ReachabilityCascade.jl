@@ -36,8 +36,8 @@ module NormalizingFlow
     using ..GatedLinearUnits: GLU, glu_mlp
     include("normalflow/thismain.jl")
 end
-using .NormalizingFlow: ConditionalFlow, loglikelihoods
-export ConditionalFlow, loglikelihoods
+using .NormalizingFlow: ConditionalFlow
+export ConditionalFlow
 
 module GANModels
     using Flux
@@ -71,7 +71,7 @@ end
 # module NeuralReachability
 #     using Flux, Random, LinearAlgebra
 #     import JLD2
-#     using ..NormalizingFlow: ConditionalFlow, loglikelihoods 
+#     using ..NormalizingFlow: ConditionalFlow
 #     include("nrle/thismain.jl")
 # end
 # import .NeuralReachability: NRLE, encode, reach, train, load

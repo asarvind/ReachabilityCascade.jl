@@ -34,50 +34,39 @@ export GLU, glu_mlp
 module NormalizingFlow
     using Flux
     using ..GatedLinearUnits: GLU, glu_mlp
-    include("normalflow/thismain.jl")
+    include("normalflow/utilities.jl")
+    include("normalflow/affinecoupling.jl")
+    include("normalflow/conditionalflow.jl")
+    include("normalflow/recurrentflow.jl")
+    include("normalflow/examples.jl")
 end
-using .NormalizingFlow: ConditionalFlow
-export ConditionalFlow
+using .NormalizingFlow: ConditionalFlow, ConditionalFlowExamples, RecurrentConditionalFlow
+export ConditionalFlow, ConditionalFlowExamples, RecurrentConditionalFlow
 
 module GANModels
     using Flux
     using ..GatedLinearUnits: glu_mlp
     include("ganfiles/gan.jl")
     include("ganfiles/gan_training.jl")
+    include("ganfiles/examples.jl")
 end
 using .GANModels: Gan, generator_forward, discriminator_forward, encoder_forward,
-                  gan_gradients, gradient_norm
+                  gan_gradients, gradient_norm, GanExamples
 export Gan, generator_forward, discriminator_forward, encoder_forward,
-       gan_gradients, gradient_norm
+       gan_gradients, gradient_norm, GanExamples
 
 module HierarchicalBehaviorCloning
     using Flux
     using ..GANModels: Gan, generator_forward, discriminator_forward, encoder_forward
     include("HBC/hbcnet.jl")
+    include("HBC/examples.jl")
 end
 using .HierarchicalBehaviorCloning: HierarchicalBehaviorCloner, task_forward,
                                     intermediate_forward, intermediate_level_forward,
-                                    control_forward
+                                    control_forward, HBCExamples
 export HierarchicalBehaviorCloner, task_forward, intermediate_forward,
-       intermediate_level_forward, control_forward
+       intermediate_level_forward, control_forward, HBCExamples
 
-module TrajectoryModels
-    using Flux, Random
-    using Statistics
-    import JLD2
-    include("trajectorydistribution/thismain.jl")
-end
-
-# module NeuralReachability
-#     using Flux, Random, LinearAlgebra
-#     import JLD2
-#     using ..NormalizingFlow: ConditionalFlow
-#     include("nrle/thismain.jl")
-# end
-# import .NeuralReachability: NRLE, encode, reach, train, load
-# export NRLE, encode, reach, train, load 
-
-# examples
 module CarDynamics
     using LazySets
     using ..ControlSystem: ContinuousSystem, DiscreteRandomSystem

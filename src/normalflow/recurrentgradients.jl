@@ -36,42 +36,43 @@ function recurrent_flow_gradient(rcf::RecurrentConditionalFlow,
     end
 
     transitions = encode_recurrent_transitions(rcf, all_samples, all_context, steps; total_steps=total_steps)
+    total_count = size(all_samples, 2)
+    logdet_total = zeros(eltype(transitions[1].logdet), total_count)
+    for trans in transitions
+        logdet_total .+= trans.logdet
+    end
+    final_latent = transitions[end].output
+    ll_vec = _loglikelihood_terms(final_latent, logdet_total)
+    total_loss = -sum(ll_vec) / total_count
+
+    hard_examples = nothing
+    sorted_indices = nothing
+    if num_lowest > 0 && total_count > 0
+        k = min(num_lowest, total_count)
+        order = sortperm(ll_vec)[1:k]
+        hard_examples = (
+            samples = all_samples[:, order],
+            context = all_context[:, order],
+            loglikelihood = ll_vec[order]
+        )
+        sorted_indices = order
+    end
 
     inputs = reduce(hcat, (transitions[i].input for i in 1:steps))
     contexts = reduce(hcat, (transitions[i].context for i in 1:steps))
-    enc = encode(rcf.flow, inputs, contexts)
-    total_columns = size(inputs, 2)
-    ll = _loglikelihood_terms(enc.latent, enc.logdet)
-    total_loss = -sum(ll) / total_columns
 
-    grads = Flux.gradient(rcf.flow) do flow
-        enc_grad = encode(flow, inputs, contexts)
-        ll_grad = _loglikelihood_terms(enc_grad.latent, enc_grad.logdet)
-        -sum(ll_grad) / total_columns
+    grad_tuple = Flux.gradient(rcf.flow) do flow
+        enc = encode(flow, inputs, contexts)
+        ll_all = _loglikelihood_terms(enc.latent, enc.logdet)
+        -sum(ll_all) / (total_count * steps)
     end
-
-    hard_examples = nothing
-    if num_lowest > 0
-        total_count = size(all_samples, 2)
-        total_entries = total_count * steps
-        if total_entries > 0
-            k = min(num_lowest, total_entries)
-            order = sortperm(ll)[1:k]
-            sample_idx = ((order .- 1) .% total_count) .+ 1
-            step_idx = ((order .- 1) .÷ total_count) .+ 1
-            hard_examples = (
-                samples = all_samples[:, sample_idx],
-                context = all_context[:, sample_idx],
-                step = step_idx,
-                loglikelihood = ll[order]
-            )
-        end
-    end
+    grads = grad_tuple[1]
 
     return (loss=total_loss,
             grads=grads,
             transitions=transitions,
-            hard_examples=hard_examples)
+            hard_examples=hard_examples,
+            sorted_indices=sorted_indices)
 end
 
 function _loglikelihood_terms(z::AbstractArray, logdet::AbstractVector)

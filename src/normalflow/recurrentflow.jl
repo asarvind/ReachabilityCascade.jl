@@ -79,8 +79,6 @@ end
 
 # ------------------------------ Helper utils --------------------------------
 
-_as_colmat(x::AbstractVecOrMat) = ndims(x) == 1 ? reshape(x, size(x,1), 1) : x
-
 function _ensure_batch(mat::AbstractMatrix, batch::Integer, label::AbstractString)
     if size(mat, 2) == 1 && batch > 1
         return repeat(mat, 1, batch)

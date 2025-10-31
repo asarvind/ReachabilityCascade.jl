@@ -35,8 +35,7 @@ function recurrent_flow_gradient(rcf::RecurrentConditionalFlow,
         all_context = hcat(all_context, old_context_mat)
     end
 
-    transitions = encode_recurrent_transitions(rcf, all_samples, all_context,
-                                               steps; total_steps=total_steps)
+    transitions = encode_recurrent_transitions(rcf, all_samples, all_context, steps; total_steps=total_steps)
 
     inputs = reduce(hcat, (transitions[i].input for i in 1:steps))
     contexts = reduce(hcat, (transitions[i].context for i in 1:steps))

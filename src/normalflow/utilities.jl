@@ -15,6 +15,13 @@ Array with the same shape as `x`.
 softclamp(x; limit=2.0f0) = limit .* tanh.(x ./ limit)
 
 """
+    _as_colmat(x)
+
+Ensure vectors are reshaped into `(features, batch)` form with a singleton batch axis.
+"""
+_as_colmat(x::AbstractVecOrMat) = ndims(x) == 1 ? reshape(x, size(x,1), 1) : x
+
+"""
     _bexpand(mask, B)
 
 Broadcast helper that repeats a `(D, 1)` mask along the batch dimension to

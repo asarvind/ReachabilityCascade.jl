@@ -2,7 +2,7 @@
 
 using Flux
 
-function recurrent_flow_gradients(rcf::RecurrentConditionalFlow,
+function recurrent_flow_gradient(rcf::RecurrentConditionalFlow,
                                   samples::AbstractVecOrMat,
                                   context::AbstractVecOrMat,
                                   steps::Integer;

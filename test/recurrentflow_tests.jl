@@ -1,5 +1,5 @@
 using Test
-using ReachabilityCascade: ConditionalFlow, RecurrentConditionalFlow, recurrent_flow_gradients
+using ReachabilityCascade: ConditionalFlow, RecurrentConditionalFlow, recurrent_flow_gradient
 using ReachabilityCascade.NormalizingFlow: encode_recurrent, decode_recurrent, encode_recurrent_transitions
 
 @testset "Recurrent Conditional Flow" begin
@@ -49,7 +49,7 @@ using ReachabilityCascade.NormalizingFlow: encode_recurrent, decode_recurrent, e
     transitions_combined = encode_recurrent_transitions(rcf, all_samples_combined,
                                                         all_context_combined, steps)
 
-    grad_result = recurrent_flow_gradients(rcf, x_mat, ctx_mat, steps;
+    grad_result = recurrent_flow_gradient(rcf, x_mat, ctx_mat, steps;
                                            old_samples=old_mat, old_context=old_ctx,
                                            num_lowest=2)
     @test grad_result.loss isa Real

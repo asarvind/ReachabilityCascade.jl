@@ -46,16 +46,15 @@ function recurrent_flow_gradient(rcf::RecurrentConditionalFlow,
     total_loss = -sum(ll_vec) / total_count
 
     hard_examples = nothing
-    sorted_indices = nothing
     if num_lowest > 0 && total_count > 0
         k = min(num_lowest, total_count)
         order = sortperm(ll_vec)[1:k]
-        hard_examples = (
+        @views hard_examples = (
             samples = all_samples[:, order],
             context = all_context[:, order],
-            loglikelihood = ll_vec[order]
+            loglikelihood = ll_vec[order],
+            step = fill(steps, k)
         )
-        sorted_indices = order
     end
 
     inputs = reduce(hcat, (transitions[i].input for i in 1:steps))
@@ -71,8 +70,7 @@ function recurrent_flow_gradient(rcf::RecurrentConditionalFlow,
     return (loss=total_loss,
             grads=grads,
             transitions=transitions,
-            hard_examples=hard_examples,
-            sorted_indices=sorted_indices)
+            hard_examples=hard_examples)
 end
 
 function _loglikelihood_terms(z::AbstractArray, logdet::AbstractVector)

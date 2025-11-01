@@ -46,14 +46,15 @@ export ConditionalFlow, RecurrentConditionalFlow, recurrent_flow_gradient
 module RecurrentControl
     include("controlnet/recurrentControl.jl")
     include("controlnet/recurrentControlGradients.jl")
+    include("controlnet/recurrentTraining.jl")
 end
 using .RecurrentControl: RecurrentControlNet, predict_terminal_state,
                          predict_state_at, predict_control_input, predict_control,
                          terminal_flow_gradient, intermediate_flow_gradient,
-                         control_flow_gradient
+                         control_flow_gradient, train_recurrent_control!
 export RecurrentControlNet, predict_terminal_state, predict_state_at,
        predict_control_input, predict_control, terminal_flow_gradient,
-       intermediate_flow_gradient, control_flow_gradient
+       intermediate_flow_gradient, control_flow_gradient, train_recurrent_control!
 
 module GANModels
     using Flux

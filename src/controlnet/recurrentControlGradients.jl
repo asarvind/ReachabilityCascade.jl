@@ -1,12 +1,42 @@
 using ..NormalizingFlow: _as_colmat, sinusoidal_time_embedding, RecurrentConditionalFlow
 using ..NormalizingFlow: recurrent_flow_gradient
 
+export TerminalGradientDatum, IntermediateGradientDatum, ControlGradientDatum
+
+struct TerminalGradientDatum{S<:AbstractVecOrMat,
+                             C<:AbstractVecOrMat,
+                             G<:AbstractVecOrMat}
+    samples::S
+    current_states::C
+    goals::G
+end
+
+struct IntermediateGradientDatum{S<:AbstractVecOrMat,
+                                 C<:AbstractVecOrMat,
+                                 T<:AbstractVecOrMat,
+                                 TI<:Union{Integer,AbstractVector{<:Integer}},
+                                 TT<:Union{Integer,AbstractVector{<:Integer}}}
+    samples::S
+    current_states::C
+    terminal_states::T
+    times::TI
+    total_times::TT
+end
+
+struct ControlGradientDatum{S<:AbstractVecOrMat,
+                            C<:AbstractVecOrMat,
+                            N<:AbstractVecOrMat}
+    samples::S
+    current_states::C
+    next_states::N
+end
+
 """Construct terminal flow gradients for the provided batches."""
 function terminal_flow_gradient(net::RecurrentControlNet,
                                 terminal_samples::AbstractVecOrMat,
                                 current_states::AbstractVecOrMat,
                                 goals::AbstractVecOrMat;
-                                steps::Integer=net.terminal_steps,
+                                steps::Integer=net.terminal_recurrence,
                                 total_steps::Integer=steps,
                                 old_samples::Union{Nothing,AbstractVecOrMat}=nothing,
                                 old_context::Union{Nothing,AbstractVecOrMat}=nothing,
@@ -46,7 +76,7 @@ function intermediate_flow_gradient(net::RecurrentControlNet,
                                     terminal_states::AbstractVecOrMat,
                                     times::Union{Integer,AbstractVector{<:Integer}},
                                     total_times;
-                                    steps::Integer=net.intermediate_steps,
+                                    steps::Integer=net.intermediate_recurrence,
                                     total_steps::Integer=steps,
                                     old_samples::Union{Nothing,AbstractVecOrMat}=nothing,
                                     old_context::Union{Nothing,AbstractVecOrMat}=nothing,
@@ -89,7 +119,7 @@ function control_flow_gradient(net::RecurrentControlNet,
                                control_samples::AbstractVecOrMat,
                                current_states::AbstractVecOrMat,
                                next_states::AbstractVecOrMat;
-                               steps::Integer=net.control_steps,
+                               steps::Integer=net.control_recurrence,
                                total_steps::Integer=steps,
                                old_samples::Union{Nothing,AbstractVecOrMat}=nothing,
                                old_context::Union{Nothing,AbstractVecOrMat}=nothing,
@@ -121,6 +151,32 @@ function control_flow_gradient(net::RecurrentControlNet,
                                      old_context=memory_context,
                                      num_lowest=num_lowest)
     return result
+end
+
+function terminal_flow_gradient(net::RecurrentControlNet,
+                                datum::TerminalGradientDatum; kwargs...)
+    terminal_flow_gradient(net,
+                           datum.samples,
+                           datum.current_states,
+                           datum.goals; kwargs...)
+end
+
+function intermediate_flow_gradient(net::RecurrentControlNet,
+                                    datum::IntermediateGradientDatum; kwargs...)
+    intermediate_flow_gradient(net,
+                               datum.samples,
+                               datum.current_states,
+                               datum.terminal_states,
+                               datum.times,
+                               datum.total_times; kwargs...)
+end
+
+function control_flow_gradient(net::RecurrentControlNet,
+                               datum::ControlGradientDatum; kwargs...)
+    control_flow_gradient(net,
+                          datum.samples,
+                          datum.current_states,
+                          datum.next_states; kwargs...)
 end
 
 function _time_embedding_matrix(net::RecurrentControlNet,

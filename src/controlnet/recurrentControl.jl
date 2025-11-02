@@ -11,15 +11,6 @@ using ..NormalizingFlow: ConditionalFlow, RecurrentConditionalFlow,
                                encode_recurrent, decode_recurrent,
                                _as_colmat, sinusoidal_time_embedding
 
-export RecurrentControlNet,
-       predict_terminal_state,
-       predict_state_at,
-       predict_control_input,
-       predict_control,
-       terminal_flow_gradient,
-       intermediate_flow_gradient,
-       control_flow_gradient
-
 """
     RecurrentControlNet(state_dim, goal_dim, control_dim; kwargs...)
 
@@ -40,20 +31,22 @@ struct RecurrentControlNet{TF,IF,CF}
     state_dim::Int
     goal_dim::Int
     control_dim::Int
-    terminal_steps::Int
-    intermediate_steps::Int
-    control_steps::Int
+    terminal_recurrence::Int
+    intermediate_recurrence::Int
+    control_recurrence::Int
     time_embed_dim::Int
 end
 
 function RecurrentControlNet(state_dim::Integer, goal_dim::Integer, control_dim::Integer;
-                             terminal_steps::Integer=4,
-                             intermediate_steps::Integer=4,
-                             control_steps::Integer=2,
+                             recurrence_steps::Integer=4,
+                             terminal_recurrence::Integer=recurrence_steps,
+                             intermediate_recurrence::Integer=recurrence_steps,
+                             control_recurrence::Integer=recurrence_steps,
                              time_embed_dim::Integer=4,
-                             terminal_kwargs::NamedTuple=NamedTuple(),
-                             intermediate_kwargs::NamedTuple=NamedTuple(),
-                             control_kwargs::NamedTuple=NamedTuple())
+                             recurrence_kwargs::NamedTuple=NamedTuple(),
+                             terminal_kwargs::NamedTuple=recurrence_kwargs,
+                             intermediate_kwargs::NamedTuple=recurrence_kwargs,
+                             control_kwargs::NamedTuple=recurrence_kwargs)
     time_embed_dim > 0 || throw(ArgumentError("time_embed_dim must be positive"))
 
     terminal_flow = RecurrentConditionalFlow(state_dim, state_dim + goal_dim, 0;
@@ -67,8 +60,8 @@ function RecurrentControlNet(state_dim::Integer, goal_dim::Integer, control_dim:
 
     return RecurrentControlNet(terminal_flow, intermediate_flow, controller_flow,
                                state_dim, goal_dim, control_dim,
-                               terminal_steps, intermediate_steps,
-                               control_steps, time_embed_dim)
+                               terminal_recurrence, intermediate_recurrence,
+                               control_recurrence, time_embed_dim)
 end
 
 """
@@ -83,7 +76,7 @@ function predict_terminal_state(net::RecurrentControlNet,
                                 current_state::AbstractVecOrMat,
                                 goal::AbstractVecOrMat;
                                 latent=nothing,
-                                steps::Integer=net.terminal_steps,
+                                steps::Integer=net.terminal_recurrence,
                                 total_steps::Integer=steps)
     state = _as_colmat(current_state)
     goal_mat = _as_colmat(goal)
@@ -110,7 +103,7 @@ function predict_state_at(net::RecurrentControlNet,
                           time_step::Integer,
                           total_time::Integer;
                           latent=nothing,
-                          steps::Integer=net.intermediate_steps,
+                          steps::Integer=net.intermediate_recurrence,
                           total_steps::Integer=steps)
     state = _as_colmat(current_state)
     term = _as_colmat(terminal_state)
@@ -137,7 +130,7 @@ function predict_control_input(net::RecurrentControlNet,
                                current_state::AbstractVecOrMat,
                                next_state::AbstractVecOrMat;
                                latent=nothing,
-                               steps::Integer=net.control_steps,
+                               steps::Integer=net.control_recurrence,
                                total_steps::Integer=steps)
     state = _as_colmat(current_state)
     next = _as_colmat(next_state)
@@ -169,9 +162,9 @@ function predict_control(net::RecurrentControlNet,
                          latent_terminal=nothing,
                          latent_intermediate=nothing,
                          latent_control=nothing,
-                         terminal_steps::Integer=net.terminal_steps,
-                         intermediate_steps::Integer=net.intermediate_steps,
-                         control_steps::Integer=net.control_steps)
+                         terminal_steps::Integer=net.terminal_recurrence,
+                         intermediate_steps::Integer=net.intermediate_recurrence,
+                         control_steps::Integer=net.control_recurrence)
     terminal_state = predict_terminal_state(net, current_state, goal;
                                             latent=latent_terminal,
                                             steps=terminal_steps,

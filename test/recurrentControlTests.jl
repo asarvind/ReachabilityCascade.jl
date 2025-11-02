@@ -1,16 +1,15 @@
 using Test
 using ReachabilityCascade
 using ReachabilityCascade: terminal_flow_gradient, intermediate_flow_gradient,
-    control_flow_gradient, train_recurrent_control!
+    control_flow_gradient, train_recurrent_control!, TerminalGradientDatum,
+    IntermediateGradientDatum, ControlGradientDatum
 using Flux: destructure, Adam, Descent, state
 using JLD2: load
 
 @testset "Recurrent Control Network" begin
     state_dim, goal_dim, control_dim = 3, 2, 1
     net = RecurrentControlNet(state_dim, goal_dim, control_dim;
-                              terminal_steps=2,
-                              intermediate_steps=2,
-                              control_steps=2,
+                              recurrence_steps=2,
                               time_embed_dim=2,
                               terminal_kwargs=(n_blocks=1,),
                               intermediate_kwargs=(n_blocks=1,),
@@ -87,9 +86,7 @@ end
 @testset "Recurrent Control Trainer" begin
     state_dim, goal_dim, control_dim = 2, 1, 1
     net = RecurrentControlNet(state_dim, goal_dim, control_dim;
-                              terminal_steps=2,
-                              intermediate_steps=2,
-                              control_steps=2,
+                              recurrence_steps=2,
                               time_embed_dim=2,
                               terminal_kwargs=(n_blocks=1,),
                               intermediate_kwargs=(n_blocks=1,),
@@ -103,8 +100,8 @@ end
     goals_1 = randn(Float32, goal_dim, batch)
     goals_2 = randn(Float32, goal_dim, batch)
     terminal_data = [
-        ((term_samples_1, current_states_1, goals_1), (; num_lowest=1)),
-        ((term_samples_2, current_states_2, goals_2), (; num_lowest=1))
+        (TerminalGradientDatum(term_samples_1, current_states_1, goals_1), (; num_lowest=1)),
+        TerminalGradientDatum(term_samples_2, current_states_2, goals_2)
     ]
 
     intermediate_samples_1 = randn(Float32, state_dim, batch)
@@ -112,15 +109,15 @@ end
     times = fill(1, batch)
     totals = fill(2, batch)
     intermediate_data = [
-        ((intermediate_samples_1, current_states_1, term_samples_1, times, totals), (; num_lowest=1)),
-        ((intermediate_samples_2, current_states_2, term_samples_2, times, totals), (; num_lowest=1))
+        (IntermediateGradientDatum(intermediate_samples_1, current_states_1, term_samples_1, times, totals), (; num_lowest=1)),
+        IntermediateGradientDatum(intermediate_samples_2, current_states_2, term_samples_2, times, totals)
     ]
 
     control_samples_1 = randn(Float32, control_dim, batch)
     control_samples_2 = randn(Float32, control_dim, batch)
     control_data = [
-        ((control_samples_1, current_states_1, intermediate_samples_1), (; num_lowest=1)),
-        ((control_samples_2, current_states_2, intermediate_samples_2), (; num_lowest=1))
+        (ControlGradientDatum(control_samples_1, current_states_1, intermediate_samples_1), (; num_lowest=1)),
+        ControlGradientDatum(control_samples_2, current_states_2, intermediate_samples_2)
     ]
 
     results = Dict(:terminal => Any[], :intermediate => Any[], :control => Any[])
@@ -137,8 +134,7 @@ end
                                           epochs=1,
                                           callback=callback,
                                           save_path=save_path,
-                                          save_interval=0.0,
-                                          save_final=true)
+                                          save_interval=0.0)
 
     @test length(results[:terminal]) == 2
     @test length(results[:intermediate]) == 2
@@ -158,9 +154,7 @@ end
     saved_state = saved_payload["model_state"]
 
     reload_net = RecurrentControlNet(state_dim, goal_dim, control_dim;
-                                     terminal_steps=2,
-                                     intermediate_steps=2,
-                                     control_steps=2,
+                                     recurrence_steps=2,
                                      time_embed_dim=2,
                                      terminal_kwargs=(n_blocks=1,),
                                      intermediate_kwargs=(n_blocks=1,),
@@ -173,8 +167,7 @@ end
                              Descent(0.0);
                              epochs=1,
                              save_path="",
-                             load_path=save_path,
-                             save_final=false)
+                             load_path=save_path)
 
     @test state(reload_net) == saved_state
 
@@ -188,19 +181,19 @@ end
     current_states = randn(Float32, state_dim, batch)
     goals = randn(Float32, goal_dim, batch)
     terminal_data = [
-        ((terminal_samples, current_states, goals), (; num_lowest=1))
+        (TerminalGradientDatum(terminal_samples, current_states, goals), (; num_lowest=1))
     ]
 
     intermediate_samples = randn(Float32, state_dim, batch)
     times = fill(1, batch)
     totals = fill(2, batch)
     intermediate_data = [
-        ((intermediate_samples, current_states, terminal_samples, times, totals), (; num_lowest=1))
+        (IntermediateGradientDatum(intermediate_samples, current_states, terminal_samples, times, totals), (; num_lowest=1))
     ]
 
     control_samples = randn(Float32, control_dim, batch)
     control_data = [
-        ((control_samples, current_states, intermediate_samples), (; num_lowest=1))
+        (ControlGradientDatum(control_samples, current_states, intermediate_samples), (; num_lowest=1))
     ]
 
     save_path = tempname() * ".jld2"
@@ -209,10 +202,10 @@ end
                               control_data,
                               Adam(1e-3);
                               epochs=1,
+                              recurrence_steps=2,
                               save_path=save_path,
                               load_path=save_path,
-                              save_interval=0.0,
-                              save_final=true)
+                              save_interval=0.0)
     @test net.state_dim == state_dim
     @test net.goal_dim == goal_dim
     @test net.control_dim == control_dim
@@ -226,9 +219,9 @@ end
                                      control_data,
                                      Descent(0.0);
                                      epochs=1,
+                                     recurrence_steps=2,
                                      save_path="",
-                                     load_path=save_path,
-                                     save_final=false)
+                                     load_path=save_path)
 
     @test state(net_reload) == stored_state
     rm(save_path; force=true)

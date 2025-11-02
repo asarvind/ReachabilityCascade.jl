@@ -51,10 +51,13 @@ end
 using .RecurrentControl: RecurrentControlNet, predict_terminal_state,
                          predict_state_at, predict_control_input, predict_control,
                          terminal_flow_gradient, intermediate_flow_gradient,
-                         control_flow_gradient, train_recurrent_control!
+                         control_flow_gradient, train_recurrent_control!,
+                         TerminalGradientDatum, IntermediateGradientDatum,
+                         ControlGradientDatum
 export RecurrentControlNet, predict_terminal_state, predict_state_at,
        predict_control_input, predict_control, terminal_flow_gradient,
-       intermediate_flow_gradient, control_flow_gradient, train_recurrent_control!
+       intermediate_flow_gradient, control_flow_gradient, train_recurrent_control!,
+       TerminalGradientDatum, IntermediateGradientDatum, ControlGradientDatum
 
 module GANModels
     using Flux

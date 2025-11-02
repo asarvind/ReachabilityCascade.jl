@@ -6,7 +6,7 @@ export train_recurrent_control!
 
 """
     train_recurrent_control!(net, terminal_data, intermediate_data, control_data, rule;
-                             epochs=1, callback=nothing)
+                             epochs=1, callback=nothing, carryover_limit=0)
 
 Train a [`RecurrentControlNet`](@ref) using three data iterators that supply
 mini-batches for the terminal, intermediate, and control gradient objectives.
@@ -21,10 +21,14 @@ of `:terminal`, `:intermediate`, or `:control`.
 
 Set `save_path` to a non-empty string to periodically checkpoint the network
 weights and (optionally) constructor metadata every `save_interval` seconds
-and again after training when `save_final=true`. When `load_path` points to an
-existing checkpoint (defaults to `save_path`), the weights and constructor
-metadata are restored before training. Checkpoints store `model_state`,
-`timestamp`, and (when supplied) the constructor arguments.
+and once more after training completes. When `load_path` points to an existing
+checkpoint (defaults to `save_path`), the weights and constructor metadata are
+restored before training. Checkpoints store `model_state`, `timestamp`, and
+(when supplied) the constructor arguments.
+
+The `carryover_limit` keyword bounds how many of the lowest-likelihood samples
+are retained from each gradient call for reuse in the next datum (set to `0`
+to keep all available samples).
 
 Returns the trained network `net`.
 """
@@ -38,9 +42,10 @@ function train_recurrent_control!(net::RecurrentControlNet,
                                   save_path::AbstractString="",
                                   load_path::AbstractString=save_path,
                                   save_interval::Real=60.0,
-                                  save_final::Bool=true,
-                                  constructor_info=nothing)
+                                  constructor_info=nothing,
+                                  carryover_limit::Integer=0)
     epochs > 0 || throw(ArgumentError("epochs must be positive"))
+    carryover_limit >= 0 || throw(ArgumentError("carryover_limit must be non-negative"))
 
     opt_terminal = Flux.setup(rule, net.terminal.flow)
     opt_intermediate = Flux.setup(rule, net.intermediate.flow)
@@ -54,7 +59,12 @@ function train_recurrent_control!(net::RecurrentControlNet,
     if load_path != "" && isfile(load_path)
         stored = load(load_path)
         if haskey(stored, "model_state")
-            Flux.loadmodel!(net, stored["model_state"])
+            state_loaded = stored["model_state"]
+            if _tree_finite(state_loaded)
+                Flux.loadmodel!(net, state_loaded)
+            else
+                @warn "Skipping checkpoint load due to non-finite weights" load_path maxlog=1
+            end
         end
         if constructor_meta === nothing && haskey(stored, "constructor")
             constructor_meta = stored["constructor"]
@@ -70,8 +80,14 @@ function train_recurrent_control!(net::RecurrentControlNet,
         for datum in terminal_data
             args, kwargs = _unpack_training_datum(datum)
             kwargs = _with_memory(kwargs, terminal_memory)
+            kwargs = _ensure_carryover_limit(kwargs, carryover_limit)
             result = terminal_grad(args, kwargs)
-            Flux.update!(opt_terminal, net.terminal.flow, result.grads)
+            if _grads_finite(result.grads)
+                Flux.update!(opt_terminal, net.terminal.flow, result.grads)
+            else
+                @warn "Skipping terminal update due to non-finite gradients" maxlog=1
+                continue
+            end
             if callback !== nothing
                 callback(:terminal, result, epoch)
             end
@@ -86,8 +102,14 @@ function train_recurrent_control!(net::RecurrentControlNet,
         for datum in intermediate_data
             args, kwargs = _unpack_training_datum(datum)
             kwargs = _with_memory(kwargs, intermediate_memory)
+            kwargs = _ensure_carryover_limit(kwargs, carryover_limit)
             result = intermediate_grad(args, kwargs)
-            Flux.update!(opt_intermediate, net.intermediate.flow, result.grads)
+            if _grads_finite(result.grads)
+                Flux.update!(opt_intermediate, net.intermediate.flow, result.grads)
+            else
+                @warn "Skipping intermediate update due to non-finite gradients" maxlog=1
+                continue
+            end
             if callback !== nothing
                 callback(:intermediate, result, epoch)
             end
@@ -102,8 +124,14 @@ function train_recurrent_control!(net::RecurrentControlNet,
         for datum in control_data
             args, kwargs = _unpack_training_datum(datum)
             kwargs = _with_memory(kwargs, control_memory)
+            kwargs = _ensure_carryover_limit(kwargs, carryover_limit)
             result = control_grad(args, kwargs)
-            Flux.update!(opt_control, net.controller.flow, result.grads)
+            if _grads_finite(result.grads)
+                Flux.update!(opt_control, net.controller.flow, result.grads)
+            else
+                @warn "Skipping control update due to non-finite gradients" maxlog=1
+                continue
+            end
             if callback !== nothing
                 callback(:control, result, epoch)
             end
@@ -114,7 +142,7 @@ function train_recurrent_control!(net::RecurrentControlNet,
         end
     end
 
-    if should_save && save_final
+    if should_save && _tree_finite(Flux.state(net))
         _save_checkpoint(save_path, net, constructor_meta)
     end
 
@@ -123,12 +151,12 @@ end
 
 """
     RecurrentControlNet(terminal_data, intermediate_data, control_data, rule;
-                        epochs=1, callback=nothing, kwargs...)
+                        epochs=1, callback=nothing, carryover_limit=0, kwargs...)
 
 Construct a [`RecurrentControlNet`](@ref) whose dimensions are inferred from the
 provided datasets, then train it using [`train_recurrent_control!`](@ref).
 The iterables must yield `(args, kwargs)` pairs just like those consumed by the
-gradient helpers. Optional `save_path`, `save_interval`, and `save_final`
+gradient helpers. Optional `save_path`, `save_interval`, and `carryover_limit`
 arguments behave like in [`train_recurrent_control!`](@ref).
 """
 function RecurrentControlNet(terminal_data_iter,
@@ -140,7 +168,7 @@ function RecurrentControlNet(terminal_data_iter,
                              save_path::AbstractString="",
                              load_path::AbstractString=save_path,
                              save_interval::Real=60.0,
-                             save_final::Bool=true,
+                             carryover_limit::Integer=0,
                              kwargs...)
     terminal_data, term_first = _stateful_with_first(terminal_data_iter)
     intermediate_data, inter_first = _stateful_with_first(intermediate_data_iter)
@@ -149,6 +177,10 @@ function RecurrentControlNet(terminal_data_iter,
     term_args, _ = _unpack_training_datum(term_first)
     inter_args, _ = _unpack_training_datum(inter_first)
     ctrl_args, _ = _unpack_training_datum(ctrl_first)
+
+    term_args = _flatten_terminal_args(term_args)
+    inter_args = _flatten_intermediate_args(inter_args)
+    ctrl_args = _flatten_control_args(ctrl_args)
 
     state_dim = size(term_args[1], 1)
     goal_dim = size(term_args[3], 1)
@@ -183,9 +215,9 @@ function RecurrentControlNet(terminal_data_iter,
                 @assert stored_args == (state_dim, goal_dim, control_dim) "Constructor args in checkpoint do not match data-provided dimensions"
             end
             stored_kwargs = get(stored_constructor, "kwargs", nothing)
-            if stored_kwargs !== nothing
-                stored_kwargs_nt = stored_kwargs isa NamedTuple ? stored_kwargs : (; stored_kwargs...)
-            end
+        if stored_kwargs !== nothing
+            stored_kwargs_nt = stored_kwargs isa NamedTuple ? stored_kwargs : (; stored_kwargs...)
+        end
         end
     end
     merged_kwargs = merge(default_kwargs, stored_kwargs_nt, user_kwargs)
@@ -206,20 +238,47 @@ function RecurrentControlNet(terminal_data_iter,
                              save_path=save_path,
                              load_path=load_path,
                              save_interval=save_interval,
-                             save_final=save_final,
-                             constructor_info=constructor_info)
+                             constructor_info=constructor_info,
+                             carryover_limit=carryover_limit)
     return net
 end
 
 function _unpack_training_datum(datum)
-    datum isa Tuple && length(datum) == 2 ||
-        throw(ArgumentError("each datum must be a pair (args, kwargs)"))
-    args, kwargs = datum
-    args_tuple = args isa Tuple ? args : (args,)
-    kwargs_nt = kwargs === nothing ? NamedTuple() :
-                kwargs isa NamedTuple ? kwargs :
-                throw(ArgumentError("keyword payload must be a NamedTuple or nothing"))
-    return args_tuple, kwargs_nt
+    if datum isa Tuple && length(datum) == 2 && datum[2] isa NamedTuple
+        args_part, kwargs_part = datum
+        args_tuple = args_part isa Tuple ? args_part : (args_part,)
+        return args_tuple, kwargs_part
+    elseif datum isa Tuple
+        return datum, NamedTuple()
+    elseif datum isa TerminalGradientDatum
+        return (datum.samples, datum.current_states, datum.goals), NamedTuple()
+    elseif datum isa IntermediateGradientDatum
+        return (datum.samples, datum.current_states, datum.terminal_states, datum.times, datum.total_times), NamedTuple()
+    elseif datum isa ControlGradientDatum
+        return (datum.samples, datum.current_states, datum.next_states), NamedTuple()
+    else
+        throw(ArgumentError("training datum must be a tuple, (args, kwargs) pair, or gradient datum struct"))
+    end
+end
+
+function _flatten_terminal_args(args)
+    _flatten_args(args, TerminalGradientDatum, d -> (d.samples, d.current_states, d.goals))
+end
+
+function _flatten_intermediate_args(args)
+    _flatten_args(args, IntermediateGradientDatum, d -> (d.samples, d.current_states, d.terminal_states, d.times, d.total_times))
+end
+
+function _flatten_control_args(args)
+    _flatten_args(args, ControlGradientDatum, d -> (d.samples, d.current_states, d.next_states))
+end
+
+function _flatten_args(args, ::Type{T}, f::Function) where T
+    if length(args) == 1 && args[1] isa T
+        return f(args[1])
+    else
+        return args
+    end
 end
 
 function _stateful_with_first(iterable)
@@ -243,6 +302,10 @@ function _with_memory(kwargs::NamedTuple, memory)
     return merge(kwargs, (old_samples=merged_samples, old_context=merged_context))
 end
 
+function _ensure_carryover_limit(kwargs::NamedTuple, carryover_limit::Integer)
+    haskey(kwargs, :num_lowest) ? kwargs : merge(kwargs, (num_lowest=carryover_limit,))
+end
+
 function _merge_memory(existing, extra)
     if existing === nothing
         return extra
@@ -264,6 +327,20 @@ function _next_memory(result)
                 context=_materialize(hard.context))
     end
 end
+
+_grads_finite(x::Number) = isfinite(x)
+_grads_finite(x::AbstractArray) = all(_grads_finite, x)
+_grads_finite(x::NamedTuple) = all(_grads_finite, values(x))
+_grads_finite(x::Tuple) = all(_grads_finite, x)
+_grads_finite(::Nothing) = true
+_grads_finite(_) = true
+
+_tree_finite(x::Number) = isfinite(x)
+_tree_finite(x::AbstractArray) = all(_tree_finite, x)
+_tree_finite(x::NamedTuple) = all(_tree_finite, values(x))
+_tree_finite(x::Tuple) = all(_tree_finite, x)
+_tree_finite(::Nothing) = true
+_tree_finite(_) = true
 
 function _save_checkpoint(path::AbstractString,
                           net::RecurrentControlNet,

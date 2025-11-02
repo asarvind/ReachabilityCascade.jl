@@ -134,7 +134,7 @@ let
 
     rule = Flux.Optimisers.OptimiserChain((Flux.ClipGrad(10.0), Flux.ClipNorm(10.0), Flux.Optimisers.Adam(1e-3)))
 
-    epochs = 1
+    epochs = 5
     save_path = "data/car/recurrentcontrolflow/rcnet.jld2"
     recurrence_kwargs = (num_blocks=2, hidden=64, n_glu=2, bias=true,
                         clamp_lim=2.0)

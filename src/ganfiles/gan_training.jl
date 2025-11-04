@@ -40,7 +40,8 @@ function gan_gradients(gan::Gan,
                        old_batch::Union{NamedTuple,Nothing}=nothing,
                        sorted_limit::Union{Int,Nothing}=1,
                        loss_fn::Function=Flux.Losses.binarycrossentropy,
-                       reconstruction_weights::Union{AbstractVector,Nothing}=nothing)
+                       reconstruction_weights::Union{AbstractVector,Nothing}=nothing,
+                       latent_sampler::Function = dim -> (2f0 .* rand(Float32, dim) .- 1f0))
     fresh_contexts, fresh_samples = _normalize_batch(fresh_batch)
     @assert sorted_limit === nothing || sorted_limit ≥ 0 "sorted_limit must be non-negative"
 
@@ -57,7 +58,7 @@ function gan_gradients(gan::Gan,
 
     dims = (gan.latent_dim, gan.context_dim, gan.data_dim)
 
-    fake_latents = randn(Float32, gan.latent_dim, total_count)
+    fake_latents = reduce(hcat, (Float32.(latent_sampler(gan.latent_dim)) for _ in 1:total_count))
     fake_samples_detached = Flux.f32(generator_forward(gan, full_contexts, fake_latents))
     encoded_latents = encoder_forward(gan, full_contexts, full_samples)
     fake_samples_from_encoded = Flux.f32(generator_forward(gan, full_contexts, encoded_latents))
@@ -79,7 +80,7 @@ function gan_gradients(gan::Gan,
     rand_count = rand(1:total_count)
     rand_idx = rand(1:total_count, rand_count)
     rand_contexts = full_contexts[:, rand_idx]
-    rand_latents = randn(Float32, gan.latent_dim, rand_count)
+    rand_latents = reduce(hcat, (Float32.(latent_sampler(gan.latent_dim)) for _ in 1:rand_count))
 
     gen_contexts = hcat(rand_contexts, full_contexts)
     gen_latents = hcat(rand_latents, encoded_latents)
@@ -93,7 +94,7 @@ function gan_gradients(gan::Gan,
     end
     generator_grad = gen_grads[1]
 
-    recon_latents = randn(Float32, gan.latent_dim, total_count)
+    recon_latents = reduce(hcat, (Float32.(latent_sampler(gan.latent_dim)) for _ in 1:total_count))
     enc_grads = Flux.gradient(gan.encoder) do enc
         temp_gan = Gan(gan.generator, gan.discriminator, enc, dims...)
         samples = generator_forward(temp_gan, full_contexts, recon_latents)

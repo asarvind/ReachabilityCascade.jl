@@ -2,7 +2,7 @@ using Flux
 using JLD2: jldsave, load
 import Base.Iterators: Stateful, reset!
 
-export train_recurrent_control!
+export train_recurrent_control!, load_recurrent_control
 
 """
     train_recurrent_control!(net, terminal_data, intermediate_data, control_data, rule;
@@ -199,11 +199,6 @@ function RecurrentControlNet(terminal_data_iter,
     size(ctrl_args[3], 1) == state_dim ||
         throw(ArgumentError("next state dimension in control data mismatch"))
 
-    default_kwargs = (
-        terminal_kwargs=(n_blocks=1,),
-        intermediate_kwargs=(n_blocks=1,),
-        control_kwargs=(n_blocks=1,),
-    )
     user_kwargs = NamedTuple(kwargs)
     stored_kwargs_nt = NamedTuple()
     if load_path != "" && isfile(load_path)
@@ -220,7 +215,31 @@ function RecurrentControlNet(terminal_data_iter,
         end
         end
     end
-    merged_kwargs = merge(default_kwargs, stored_kwargs_nt, user_kwargs)
+    merged_kwargs = merge((terminal_kwargs=(n_blocks=1,),
+                           intermediate_kwargs=(n_blocks=1,),
+                           control_kwargs=(n_blocks=1,)),
+                          stored_kwargs_nt,
+                          user_kwargs)
+
+    kwargs_dict = Dict{Symbol,Any}(pairs(merged_kwargs))
+    recurrence_kwargs = get(kwargs_dict, :recurrence_kwargs, NamedTuple())
+    recurrence_kwargs isa NamedTuple ||
+        throw(ArgumentError("recurrence_kwargs must be provided as a NamedTuple"))
+    has_recurrence = !isempty(propertynames(recurrence_kwargs))
+
+    if has_recurrence
+        if !hasproperty(user_kwargs, :terminal_kwargs) && !hasproperty(stored_kwargs_nt, :terminal_kwargs)
+            kwargs_dict[:terminal_kwargs] = recurrence_kwargs
+        end
+        if !hasproperty(user_kwargs, :intermediate_kwargs) && !hasproperty(stored_kwargs_nt, :intermediate_kwargs)
+            kwargs_dict[:intermediate_kwargs] = recurrence_kwargs
+        end
+        if !hasproperty(user_kwargs, :control_kwargs) && !hasproperty(stored_kwargs_nt, :control_kwargs)
+            kwargs_dict[:control_kwargs] = recurrence_kwargs
+        end
+    end
+
+    merged_kwargs = (; kwargs_dict...)
 
     constructor_info = Dict(
         "args" => (state_dim, goal_dim, control_dim),
@@ -353,4 +372,74 @@ function _save_checkpoint(path::AbstractString,
         jldsave(path; model_state=state, timestamp=ts, constructor=constructor_info)
     end
     return ts
+end
+
+"""
+    load_recurrent_control(load_path)
+
+Reconstruct a [`RecurrentControlNet`](@ref) from a checkpoint produced by
+[`train_recurrent_control!`](@ref). The checkpoint must contain the constructor
+arguments (`"constructor" => Dict("args" => …, "kwargs" => …)`) and can
+optionally provide `"model_state"` with the stored weights. When finite weights
+are available they are loaded into the reconstructed network; otherwise a
+warning is emitted and the network is returned with freshly initialised
+parameters.
+"""
+function load_recurrent_control(load_path::AbstractString)
+    isfile(load_path) || throw(ArgumentError("checkpoint not found at $load_path"))
+    stored = load(load_path)
+
+    constructor = get(stored, "constructor", nothing)
+    constructor === nothing &&
+        throw(ArgumentError("checkpoint $load_path does not contain constructor metadata"))
+
+    args = _constructor_entry(constructor, "args")
+    args === nothing &&
+        throw(ArgumentError("checkpoint $load_path is missing constructor args"))
+    args isa Tuple ||
+        throw(ArgumentError("constructor args in $load_path must be stored as a tuple"))
+    length(args) == 3 ||
+        throw(ArgumentError("expected (state_dim, goal_dim, control_dim) in constructor args"))
+
+    kwargs_data = _constructor_entry(constructor, "kwargs")
+    kwargs_nt = _constructor_kwargs(kwargs_data)
+
+    net = RecurrentControlNet(args...; kwargs_nt...)
+
+    state = get(stored, "model_state", nothing)
+    if state === nothing
+        @warn "Checkpoint does not contain model_state; returning freshly initialised network" load_path maxlog=1
+    elseif _tree_finite(state)
+        Flux.loadmodel!(net, state)
+    else
+        @warn "Skipping weight load due to non-finite values" load_path maxlog=1
+    end
+
+    return net
+end
+
+function _constructor_entry(constructor, key::AbstractString)
+    if constructor isa AbstractDict
+        return get(constructor, key, nothing)
+    elseif constructor isa NamedTuple
+        sym = Symbol(key)
+        return hasproperty(constructor, sym) ? getproperty(constructor, sym) : nothing
+    else
+        return nothing
+    end
+end
+
+function _constructor_kwargs(kwargs_data)
+    if kwargs_data === nothing
+        return NamedTuple()
+    elseif kwargs_data isa NamedTuple
+        return kwargs_data
+    elseif kwargs_data isa AbstractDict
+        keys_vec = collect(keys(kwargs_data))
+        vals_vec = collect(values(kwargs_data))
+        syms = Symbol.(keys_vec)
+        return NamedTuple{Tuple(syms...)}(Tuple(vals_vec))
+    else
+        return NamedTuple(kwargs_data)
+    end
 end

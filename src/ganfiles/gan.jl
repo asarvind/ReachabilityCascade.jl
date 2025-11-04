@@ -41,7 +41,7 @@ function Gan(latent_dim::Integer, context_dim::Integer, data_dim::Integer;
              gen_gate=Flux.σ,
              disc_gate=Flux.σ,
              enc_gate=Flux.σ,
-             generator_out::Union{Function,Nothing}=Flux.tanh,
+             generator_out::Union{Function,Nothing}=nothing,
              discriminator_out::Union{Function,Nothing}=Flux.σ,
              encoder_saturation::Function=tanh,
              generator_zero_init::Bool=false,
@@ -50,18 +50,21 @@ function Gan(latent_dim::Integer, context_dim::Integer, data_dim::Integer;
     gen_input_dim = latent_dim + context_dim
     gen_core = glu_mlp(gen_input_dim, gen_hidden, data_dim;
                        n_glu=n_glu_gen, act=gen_gate, zero_init=generator_zero_init)
-    generator = generator_out === nothing ? gen_core : Chain(gen_core, generator_out)
+    generator = generator_out === nothing ?
+        gen_core :
+        Chain(gen_core, x -> generator_out.(x))
 
     disc_input_dim = data_dim + context_dim + latent_dim
     disc_core = glu_mlp(disc_input_dim, disc_hidden, 1;
                         n_glu=n_glu_disc, act=disc_gate, zero_init=discriminator_zero_init)
-    discriminator = discriminator_out === nothing ? disc_core : Chain(disc_core, discriminator_out)
+    discriminator = discriminator_out === nothing ?
+        disc_core :
+        Chain(disc_core, x -> discriminator_out.(x))
 
     enc_input_dim = data_dim + context_dim
     enc_core = glu_mlp(enc_input_dim, enc_hidden, latent_dim;
                        n_glu=n_glu_enc, act=enc_gate, zero_init=encoder_zero_init)
-    encoder_tail = x -> encoder_saturation.(x)
-    encoder = Chain(enc_core, encoder_tail)
+    encoder = Chain(enc_core, x -> encoder_saturation.(x))
 
     return Gan(generator, discriminator, encoder, latent_dim, context_dim, data_dim)
 end

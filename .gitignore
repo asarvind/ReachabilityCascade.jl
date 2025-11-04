@@ -3,3 +3,8 @@ Symlink*
 backupfiles/*
 *.jld2
 coding.jl
+.julia/
+.julia-depot/
+.julia_deopt/*
+.julia_depot/*
+.juliaup/*

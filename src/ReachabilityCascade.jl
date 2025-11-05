@@ -43,24 +43,24 @@ end
 using .NormalizingFlow: ConditionalFlow, RecurrentConditionalFlow, recurrent_flow_gradient
 export ConditionalFlow, RecurrentConditionalFlow, recurrent_flow_gradient
 
-module RecurrentControl
-    include("controlnet/recurrentControl.jl")
-    include("controlnet/recurrentControlGradients.jl")
-    include("controlnet/recurrentTraining.jl")
-    include("controlnet/recurrentControlPerturbation.jl")
-end
-using .RecurrentControl: RecurrentControlNet, predict_terminal_state,
-                         predict_state_at, predict_control_input, predict_control,
-                         terminal_flow_gradient, intermediate_flow_gradient,
-                         control_flow_gradient, train_recurrent_control!,
-                         load_recurrent_control, train_recurrent_control_perturb!,
-                         TerminalGradientDatum, IntermediateGradientDatum,
-                         ControlGradientDatum
-export RecurrentControlNet, predict_terminal_state, predict_state_at,
-       predict_control_input, predict_control, terminal_flow_gradient,
-       intermediate_flow_gradient, control_flow_gradient, train_recurrent_control!,
-       load_recurrent_control, train_recurrent_control_perturb!,
-       TerminalGradientDatum, IntermediateGradientDatum, ControlGradientDatum
+# module RecurrentControl
+#     include("controlnet/recurrentControl.jl")
+#     include("controlnet/recurrentControlGradients.jl")
+#     include("controlnet/recurrentTraining.jl")
+#     include("controlnet/recurrentControlPerturbation.jl")
+# end
+# using .RecurrentControl: RecurrentControlNet, predict_terminal_state,
+#                          predict_state_at, predict_control_input, predict_control,
+#                          terminal_flow_gradient, intermediate_flow_gradient,
+#                          control_flow_gradient, train_recurrent_control!,
+#                          load_recurrent_control, train_recurrent_control_perturb!,
+#                          TerminalGradientDatum, IntermediateGradientDatum,
+#                          ControlGradientDatum
+# export RecurrentControlNet, predict_terminal_state, predict_state_at,
+#        predict_control_input, predict_control, terminal_flow_gradient,
+#        intermediate_flow_gradient, control_flow_gradient, train_recurrent_control!,
+#        load_recurrent_control, train_recurrent_control_perturb!,
+#        TerminalGradientDatum, IntermediateGradientDatum, ControlGradientDatum
 
 module GANModels
     using Flux
@@ -74,53 +74,56 @@ using .GANModels: Gan, generator_forward, discriminator_forward, encoder_forward
 export Gan, generator_forward, discriminator_forward, encoder_forward,
        gan_gradients, gradient_norm, GanExamples
 
-module GANControl
-    using Flux
-    include("controlgan/ganControl.jl")
-    include("controlgan/ganControlTraining.jl")
-end
-import .GANControl: GANControlNet, train_gan_control!, load_gan_control
-const gan_predict_terminal_state = GANControl.predict_terminal_state
-const gan_predict_state_at = GANControl.predict_state_at
-const gan_predict_control_input = GANControl.predict_control_input
-const gan_predict_control = GANControl.predict_control
-export GANControlNet, gan_predict_terminal_state, gan_predict_state_at,
-       gan_predict_control_input, gan_predict_control,
-       train_gan_control!, load_gan_control
+# module GANControl
+#     using Flux
+#     include("controlgan/ganControl.jl")
+#     include("controlgan/ganControlTraining.jl")
+# end
+# import .GANControl: GANControlNet, train_gan_control!, load_gan_control
+# const gan_predict_terminal_state = GANControl.predict_terminal_state
+# const gan_predict_state_at = GANControl.predict_state_at
+# const gan_predict_control_input = GANControl.predict_control_input
+# const gan_predict_control = GANControl.predict_control
+# export GANControlNet, gan_predict_terminal_state, gan_predict_state_at,
+#        gan_predict_control_input, gan_predict_control,
+#        train_gan_control!, load_gan_control
 
-module TrajectoryTransformers
-    using Flux
-    include("trajectorytransformer/trajectoryTransformer.jl")
-end
-using .TrajectoryTransformers: TrajectoryTransformer, transform_sequence,
-                              predict_state_sequence, predict_latent_sequence
-export TrajectoryTransformer, transform_sequence,
-       predict_state_sequence, predict_latent_sequence
+# module TrajectoryTransformers
+#     using Flux
+#     include("trajectorytransformer/trajectoryTransformer.jl")
+# end
+# using .TrajectoryTransformers: TrajectoryTransformer, transform_sequence,
+#                               predict_state_sequence, predict_latent_sequence
+# export TrajectoryTransformer, transform_sequence,
+#        predict_state_sequence, predict_latent_sequence
 
-module BitwiseTransformers
-    using Flux
-    include("bitwisetransformer/probabilityTransformer.jl")
-    include("bitwisetransformer/hierarchicalBitwiseTransformer.jl")
-    include("bitwisetransformer/gradients.jl")
-end
-using .BitwiseTransformers: ProbabilityTransformer,
-                            HierarchicalBitwiseTransformer,
-                            gradients
-export ProbabilityTransformer,
-       HierarchicalBitwiseTransformer,
-       gradients
+# module BitwiseTransformers
+#     using Flux
+#     include("bitwisetransformer/probabilityTransformer.jl")
+#     include("bitwisetransformer/hierarchicalBitwiseTransformer.jl")
+#     include("bitwisetransformer/gradients.jl")
+#     include("bitwisetransformer/hierarchicalBitwiseTraining.jl")
+# end
+# using .BitwiseTransformers: ProbabilityTransformer,
+#                             HierarchicalBitwiseTransformer,
+#                             gradients
+# import .BitwiseTransformers: train!
+# export ProbabilityTransformer,
+#        HierarchicalBitwiseTransformer,
+#        gradients,
+#        train!
 
-module HierarchicalBehaviorCloning
-    using Flux
-    using ..GANModels: Gan, generator_forward, discriminator_forward, encoder_forward
-    include("HBC/hbcnet.jl")
-    include("HBC/examples.jl")
-end
-using .HierarchicalBehaviorCloning: HierarchicalBehaviorCloner, task_forward,
-                                    intermediate_forward, intermediate_level_forward,
-                                    control_forward, HBCExamples
-export HierarchicalBehaviorCloner, task_forward, intermediate_forward,
-       intermediate_level_forward, control_forward, HBCExamples
+# module HierarchicalBehaviorCloning
+#     using Flux
+#     using ..GANModels: Gan, generator_forward, discriminator_forward, encoder_forward
+#     include("HBC/hbcnet.jl")
+#     include("HBC/examples.jl")
+# end
+# using .HierarchicalBehaviorCloning: HierarchicalBehaviorCloner, task_forward,
+#                                     intermediate_forward, intermediate_level_forward,
+#                                     control_forward, HBCExamples
+# export HierarchicalBehaviorCloner, task_forward, intermediate_forward,
+#        intermediate_level_forward, control_forward, HBCExamples
 
 module CarDynamics
     using LazySets

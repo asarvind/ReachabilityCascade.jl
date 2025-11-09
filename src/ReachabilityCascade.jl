@@ -84,8 +84,10 @@ module BehavioralCloning
     using Random
     using ..ControlSystem: DiscreteRandomSystem
     include("behavioralcloning/dataperturbation.jl")
+    using Flux
+    include("behavioralcloning/transformermodel.jl")
 end
-using .BehavioralCloning: perturb_input_sequence
-export perturb_input_sequence
+using .BehavioralCloning: perturb_input_sequence, ResidualControlTransformer, sinusoidal_embedding
+export perturb_input_sequence, ResidualControlTransformer, sinusoidal_embedding
 
 end

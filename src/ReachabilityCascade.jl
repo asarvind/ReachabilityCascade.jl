@@ -80,4 +80,12 @@ module CarDataGeneration
     include("examples/car/datageneration.jl")
 end
 
+module BehavioralCloning
+    using Random
+    using ..ControlSystem: DiscreteRandomSystem
+    include("behavioralcloning/dataperturbation.jl")
+end
+using .BehavioralCloning: perturb_input_sequence
+export perturb_input_sequence
+
 end

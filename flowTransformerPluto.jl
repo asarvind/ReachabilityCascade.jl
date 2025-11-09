@@ -27,7 +27,7 @@ import JLD2
 using LazySets: Hyperrectangle, low, high
 import Flux
 import ReachabilityCascade.CarDynamics: discrete_vehicles, safe_discrete_vehicles
-using ReachabilityCascade: FlowTransformer, train!, load_flow_transformer
+using ReachabilityCascade: FlowTransformer, train!, load_flow_transformer, perturb_input_sequence
 end
 
 # ╔═╡ fd727526-1ac1-4f0f-8529-c31d599bbf39
@@ -140,11 +140,14 @@ let
 	# ind = 2851
 	strj, utrj = data[ind].state_trajectory, data[ind].input_signal
 	println(ind)
-	ds(strj[:, 1], utrj), strj
+	norm(strj[1:2, end] - rand(2))
+	uper = perturb_input_sequence(ds, strj[:, 1], utrj, [0.05, 0.5], 
+								  (x, u) -> 0.0, 
+								  (x, u) -> norm(strj[1:2, end] - x[1:2]),
+								  3
+								 )
+	
 end
-
-# ╔═╡ 3ec1b5b9-8352-4ee7-9e5a-eeed33a494de
-
 
 # ╔═╡ Cell order:
 # ╠═f4a170e4-badf-11f0-2436-c7b7cb9e8770
@@ -156,4 +159,3 @@ end
 # ╠═e65033ba-404e-454a-8248-d167a5d7b13b
 # ╠═6d8149ac-2090-4f5b-9edf-faa5d776cf97
 # ╠═243105cf-e8b3-48a9-a9e3-82c3e4bacaa5
-# ╠═3ec1b5b9-8352-4ee7-9e5a-eeed33a494de

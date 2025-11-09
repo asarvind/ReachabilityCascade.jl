@@ -1,4 +1,6 @@
 using Test
 using ReachabilityCascade
 
-
+include("normalizingflowtransformer/flow_transformer_tests.jl")
+include("normalizingflowtransformer/flow_transformer_gradient_tests.jl")
+include("normalizingflowtransformer/flow_transformer_training_tests.jl")

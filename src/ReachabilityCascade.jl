@@ -53,18 +53,6 @@ using .NormalizingFlowTransformer: FlowTransformer, flow_transformer_gradient, d
 export FlowTransformer, flow_transformer_gradient, default_flow_loss, train!, load_flow_transformer
 
 
-module GANModels
-    using Flux
-    using ..GatedLinearUnits: glu_mlp
-    include("ganfiles/gan.jl")
-    include("ganfiles/gan_training.jl")
-    include("ganfiles/examples.jl")
-end
-using .GANModels: Gan, generator_forward, discriminator_forward, encoder_forward,
-                  gan_gradients, gradient_norm, GanExamples
-export Gan, generator_forward, discriminator_forward, encoder_forward,
-       gan_gradients, gradient_norm, GanExamples
-
 module CarDynamics
     using LazySets
     using ..ControlSystem: ContinuousSystem, DiscreteRandomSystem
@@ -89,5 +77,20 @@ module BehavioralCloning
 end
 using .BehavioralCloning: perturb_input_sequence, ResidualControlTransformer, sinusoidal_embedding
 export perturb_input_sequence, ResidualControlTransformer, sinusoidal_embedding
+
+module SimpleTransformers
+    using Flux
+    include("simpletransformers/simpletransformer.jl")
+end
+using .SimpleTransformers: SimpleSequenceTransformer
+export SimpleSequenceTransformer
+
+module ImitationLearning
+    using Flux, Random
+    include("imitationlearning/iterativetransformer.jl")
+    include("imitationlearning/gradients.jl")
+end
+using .ImitationLearning: IterativeRefinementNetwork, refine_control_sequence, refinement_gradient
+export IterativeRefinementNetwork, refine_control_sequence, refinement_gradient
 
 end

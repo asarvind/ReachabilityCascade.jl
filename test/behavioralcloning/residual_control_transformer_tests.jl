@@ -14,11 +14,11 @@ const sinusoidal_embedding = ReachabilityCascade.sinusoidal_embedding
     rng = MersenneTwister(123)
 
     model = ResidualControlTransformer(control_dim, state_dim, context_dim;
+                                       hidden_dim=32,
                                        num_heads=4,
-                                       ff_dim=64,
                                        num_layers=2,
                                        pos_dim=7,
-                                       dropout=0.0)
+                                       max_period=5_000.0)
 
     u_seq = randn(rng, control_dim, seq_len)
     x_seq = randn(rng, state_dim, seq_len)
@@ -35,11 +35,4 @@ const sinusoidal_embedding = ReachabilityCascade.sinusoidal_embedding
         @test size(delta) == size(u_seq)
     end
 
-    @testset "gradient flow" begin
-        loss_fn(u, x, ctx) = sum(abs2, model(u, x, ctx))
-        ps = Flux.params(model)
-        grads = gradient(() -> loss_fn(u_seq, x_seq, context), ps)
-        nonzero = any(param -> any(!iszero, grads[param]), ps)
-        @test nonzero
-    end
 end

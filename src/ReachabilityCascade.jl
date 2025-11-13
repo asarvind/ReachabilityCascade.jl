@@ -66,11 +66,4 @@ module CarDataGeneration
     include("examples/car/datageneration.jl")
 end
 
-module SimpleTransformers
-    using Flux
-    include("simpletransformers/simpletransformer.jl")
-end
-using .SimpleTransformers: SimpleSequenceTransformer
-export SimpleSequenceTransformer
-
 end

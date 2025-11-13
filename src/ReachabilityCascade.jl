@@ -37,11 +37,9 @@ module NormalizingFlow
     include("normalflow/utilities.jl")
     include("normalflow/affinecoupling.jl")
     include("normalflow/conditionalflow.jl")
-    include("normalflow/recurrentflow.jl")
-    include("normalflow/recurrentgradients.jl")
 end
-using .NormalizingFlow: ConditionalFlow, RecurrentConditionalFlow, recurrent_flow_gradient
-export ConditionalFlow, RecurrentConditionalFlow, recurrent_flow_gradient
+using .NormalizingFlow: ConditionalFlow
+export ConditionalFlow
 
 module NormalizingFlowTransformer
     using Flux
@@ -68,29 +66,11 @@ module CarDataGeneration
     include("examples/car/datageneration.jl")
 end
 
-module BehavioralCloning
-    using Random
-    using ..ControlSystem: DiscreteRandomSystem
-    include("behavioralcloning/dataperturbation.jl")
-    using Flux
-    include("behavioralcloning/transformermodel.jl")
-end
-using .BehavioralCloning: perturb_input_sequence, ResidualControlTransformer, sinusoidal_embedding
-export perturb_input_sequence, ResidualControlTransformer, sinusoidal_embedding
-
 module SimpleTransformers
     using Flux
     include("simpletransformers/simpletransformer.jl")
 end
 using .SimpleTransformers: SimpleSequenceTransformer
 export SimpleSequenceTransformer
-
-module ImitationLearning
-    using Flux, Random
-    include("imitationlearning/iterativetransformer.jl")
-    include("imitationlearning/gradients.jl")
-end
-using .ImitationLearning: IterativeRefinementNetwork, refine_control_sequence, refinement_gradient
-export IterativeRefinementNetwork, refine_control_sequence, refinement_gradient
 
 end

@@ -59,4 +59,14 @@ module CarDataGeneration
     include("examples/car/datageneration.jl")
 end
 
+module GenerativeAdversarialNetwork
+    using Flux
+    include("gan/encoder.jl")
+    include("gan/decoder.jl")
+    include("gan/gan.jl")
+    include("gan/gradients.jl")
+end
+using .GenerativeAdversarialNetwork: GAN, Encoder, Decoder, encode, decode, compute_gradients
+export GAN, Encoder, Decoder, encode, decode, compute_gradients
+
 end

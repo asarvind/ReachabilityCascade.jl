@@ -8,3 +8,5 @@ coding.jl
 .julia_deopt/*
 .julia_depot/*
 .juliaup/*
+test_output.txt
+check_*.jl

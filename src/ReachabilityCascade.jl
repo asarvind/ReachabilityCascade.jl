@@ -41,14 +41,7 @@ end
 using .NormalizingFlow: ConditionalFlow
 export ConditionalFlow
 
-module NormalizingFlowTransformer
-    using Flux
-    include("normalizingflowtransformer/flowtransformer.jl")
-    include("normalizingflowtransformer/gradients.jl")
-    include("normalizingflowtransformer/training.jl")
-end
-using .NormalizingFlowTransformer: FlowTransformer, flow_transformer_gradient, default_flow_loss, train!, load_flow_transformer
-export FlowTransformer, flow_transformer_gradient, default_flow_loss, train!, load_flow_transformer
+
 
 
 module CarDynamics

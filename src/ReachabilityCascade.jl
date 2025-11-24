@@ -59,8 +59,16 @@ module CarDataGeneration
     include("examples/car/datageneration.jl")
 end
 
-include("RecurrentGAN/RecurrentGAN.jl")
-using .RecurrentGANs: RecurrentGAN, encode, decode
-export RecurrentGAN, encode, decode
+module AdversarialRecurrence
+    include("RecurrentGAN/layers.jl")
+    include("RecurrentGAN/encoder.jl")
+    include("RecurrentGAN/decoder.jl")
+    include("RecurrentGAN/model.jl")
+    include("RecurrentGAN/losses.jl")
+end
+using .AdversarialRecurrence: RecurrentGAN, Encoder, Decoder, encode, decode
+using .AdversarialRecurrence: encoder_reconstruction_loss, decoder_reconstruction_loss
+export RecurrentGAN, Encoder, Decoder, encode, decode
+export encoder_reconstruction_loss, decoder_reconstruction_loss
 
 end

@@ -26,12 +26,15 @@ using .SequenceTransform
         @test size(y_2d) == (out_dim, seq_len)
 
         # Manual verification
-        dense_w = ones(Float32, 1, 1)
+        # Dense layer now receives 2 inputs: [feature, positional_encoding]
+        # For input with 1 feature, positional encoding is k/(k+1)
+        # Set weights to [1, 0] to ignore positional encoding and only use the feature
+        dense_w = hcat(ones(Float32, 1, 1), zeros(Float32, 1, 1))  # (1, 2) weight matrix
         dense_b = zeros(Float32, 1)
         simple_block = ForwardCumsumBlock(Dense(dense_w, dense_b, identity))
         
         x_simple = ones(Float32, 1, 5, 1) # 1 feature, 5 steps, 1 batch
-        # Dense output: all 1s
+        # Dense output: all 1s (ignores positional encoding)
         # Cumsum: 1, 2, 3, 4, 5
         # Average: 1/1, 2/2, 3/3, 4/4, 5/5 -> all 1s
         y_simple = simple_block(x_simple)
@@ -65,12 +68,14 @@ using .SequenceTransform
         @test size(y_2d) == (out_dim, seq_len)
         
         # Manual verification
-        dense_w = ones(Float32, 1, 1)
+        # Dense layer now receives 2 inputs: [feature, positional_encoding]
+        # Set weights to [1, 0] to ignore positional encoding and only use the feature
+        dense_w = hcat(ones(Float32, 1, 1), zeros(Float32, 1, 1))  # (1, 2) weight matrix
         dense_b = zeros(Float32, 1)
         simple_block = ReverseCumsumBlock(Dense(dense_w, dense_b, identity))
         
         x_simple = ones(Float32, 1, 5, 1)
-        # Dense output: all 1s
+        # Dense output: all 1s (ignores positional encoding)
         # Reverse Cumsum: 5, 4, 3, 2, 1
         # Divisors: 5, 4, 3, 2, 1
         # Average: 1, 1, 1, 1, 1

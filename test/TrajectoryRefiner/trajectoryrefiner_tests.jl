@@ -44,13 +44,20 @@ using ReachabilityCascade.SequenceTransform
         
         net = CorrectionNetwork(state_dim, input_dim, hidden_dim, out_dim, depth, context_dim)
         
-        # Mock transition function: linear dynamics x_next = x + u
-        transition_fn(x, u) = x + vcat(u, u) # broadcast u to state dim
+        # Mock transition network: linear dynamics x_next = x + u
+        # Input: (x_prev_seq, u_seq) -> x_res_seq
+        # Dimensions: (state_dim, seq_len, batch)
+        struct MockTransition
+        end
+        
+        (m::MockTransition)(x, u) = x + vcat(u, u) # broadcast u to state dim
+        
+        transition = MockTransition()
         
         # Mock constraint function: x[1] > 0.5
         constraint_fn(x) = x[1:1, :] .- 0.5f0
         
-        solver = RefinerSolver(net, transition_fn, constraint_fn)
+        solver = RefinerSolver(net, transition, constraint_fn)
         
         batch_size = 2
         seq_len = 5
@@ -75,7 +82,7 @@ using ReachabilityCascade.SequenceTransform
         # Simulate
         curr_x = x_0_valid
         for t in 1:seq_len
-            curr_x = transition_fn(curr_x, u_valid[:, t, :])
+            curr_x = transition(curr_x, u_valid[:, t, :])
             x_valid[:, t, :] = curr_x
         end
         
@@ -90,5 +97,10 @@ using ReachabilityCascade.SequenceTransform
         
         @test x_new_valid ≈ x_valid
         @test u_new_valid ≈ u_valid
+        
+        # Test Flux.trainable
+        params = Flux.trainable(solver)
+        @test length(params) == 1
+        @test params[1] === net
     end
 end

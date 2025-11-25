@@ -31,15 +31,7 @@ end
 using .GatedLinearUnits: GLU, glu_mlp
 export GLU, glu_mlp
 
-module NormalizingFlow
-    using Flux
-    using ..GatedLinearUnits: GLU, glu_mlp
-    include("normalflow/utilities.jl")
-    include("normalflow/affinecoupling.jl")
-    include("normalflow/conditionalflow.jl")
-end
-using .NormalizingFlow: ConditionalFlow
-export ConditionalFlow
+
 
 
 
@@ -57,24 +49,13 @@ module CarDataGeneration
     using ..ControlUtilities: linearize, lqr_lyap, correct_trajectory
     using ..CarDynamics: discrete_vehicles
     include("examples/car/datageneration.jl")
-    include("examples/car/datageneration.jl")
 end
 
 include("SequenceTransform/SequenceTransform.jl")
 using .SequenceTransform
 export ScanMixer, SequenceTransformation
 
-module AdversarialRecurrence
-    include("RecurrentGAN/layers.jl")
-    include("RecurrentGAN/encoder.jl")
-    include("RecurrentGAN/decoder.jl")
-    include("RecurrentGAN/model.jl")
-    include("RecurrentGAN/losses.jl")
-end
-using .AdversarialRecurrence: RecurrentGAN, Encoder, Decoder, encode, decode
-using .AdversarialRecurrence: encoder_reconstruction_loss, decoder_reconstruction_loss
-export RecurrentGAN, Encoder, Decoder, encode, decode
-export encoder_reconstruction_loss, decoder_reconstruction_loss
+
 
 include("TrajectoryRefiner/TrajectoryRefiner.jl")
 using .TrajectoryRefiner

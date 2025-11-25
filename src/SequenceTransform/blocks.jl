@@ -7,15 +7,13 @@ using Flux
 A block that applies a feedforward layer, then a cumulative sum along the sequence dimension (forward),
 followed by layer normalization.
 """
-struct ForwardCumsumBlock{F, L}
+struct ForwardCumsumBlock{F}
     dense::F
-    norm::L
 end
 
 function ForwardCumsumBlock(in_dim::Int, out_dim::Int, activation=relu)
     dense = Dense(in_dim => out_dim, activation)
-    norm = LayerNorm(out_dim)
-    return ForwardCumsumBlock(dense, norm)
+    return ForwardCumsumBlock(dense)
 end
 
 Flux.@layer ForwardCumsumBlock
@@ -28,11 +26,15 @@ function (m::ForwardCumsumBlock)(x::AbstractArray)
     # Cumulative sum along sequence dimension (dim 2)
     h_cumsum = cumsum(h, dims=2)
     
-    # LayerNorm expects (features, ...)
-    # We want to normalize over the feature dimension for each step? 
-    # Usually LayerNorm is applied per sample. 
-    # Flux LayerNorm(size) normalizes over the first dimension.
-    return m.norm(h_cumsum)
+    # Compute cumulative average
+    seq_len = size(h, 2)
+    if ndims(h) == 3
+        d = reshape(1:seq_len, 1, seq_len, 1)
+    else
+        d = reshape(1:seq_len, 1, seq_len)
+    end
+    
+    return h_cumsum ./ d
 end
 
 """
@@ -41,15 +43,13 @@ end
 A block that applies a feedforward layer, then a cumulative sum along the sequence dimension (reverse order),
 followed by layer normalization.
 """
-struct ReverseCumsumBlock{F, L}
+struct ReverseCumsumBlock{F}
     dense::F
-    norm::L
 end
 
 function ReverseCumsumBlock(in_dim::Int, out_dim::Int, activation=relu)
     dense = Dense(in_dim => out_dim, activation)
-    norm = LayerNorm(out_dim)
-    return ReverseCumsumBlock(dense, norm)
+    return ReverseCumsumBlock(dense)
 end
 
 Flux.@layer ReverseCumsumBlock
@@ -61,7 +61,18 @@ function (m::ReverseCumsumBlock)(x::AbstractArray)
     # We can reverse, cumsum, then reverse back.
     h_cumsum = reverse(cumsum(reverse(h, dims=2), dims=2), dims=2)
     
-    return m.norm(h_cumsum)
+    # Compute reverse cumulative average
+    seq_len = size(h, 2)
+    # For reverse cumsum, the divisor corresponds to the number of elements summed from the end.
+    # At index t (1-based), we have summed elements t, t+1, ..., T.
+    # The count is T - t + 1.
+    if ndims(h) == 3
+        d = reshape(reverse(1:seq_len), 1, seq_len, 1)
+    else
+        d = reshape(reverse(1:seq_len), 1, seq_len)
+    end
+    
+    return h_cumsum ./ d
 end
 
 """

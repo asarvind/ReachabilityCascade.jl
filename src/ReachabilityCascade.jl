@@ -57,7 +57,12 @@ module CarDataGeneration
     using ..ControlUtilities: linearize, lqr_lyap, correct_trajectory
     using ..CarDynamics: discrete_vehicles
     include("examples/car/datageneration.jl")
+    include("examples/car/datageneration.jl")
 end
+
+include("SequenceTransform/SequenceTransform.jl")
+using .SequenceTransform
+export ScanMixer, SequenceTransformation
 
 module AdversarialRecurrence
     include("RecurrentGAN/layers.jl")
@@ -70,5 +75,9 @@ using .AdversarialRecurrence: RecurrentGAN, Encoder, Decoder, encode, decode
 using .AdversarialRecurrence: encoder_reconstruction_loss, decoder_reconstruction_loss
 export RecurrentGAN, Encoder, Decoder, encode, decode
 export encoder_reconstruction_loss, decoder_reconstruction_loss
+
+include("TrajectoryRefiner/TrajectoryRefiner.jl")
+using .TrajectoryRefiner
+export CorrectionNetwork, RefinerSolver, step_refiner
 
 end

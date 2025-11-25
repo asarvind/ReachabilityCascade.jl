@@ -28,11 +28,22 @@ using .SequenceTransform
         # Manual verification
         dense_w = ones(Float32, 1, 1)
         dense_b = zeros(Float32, 1)
-        simple_block = ForwardCumsumBlock(Dense(dense_w, dense_b, identity), identity) # Identity norm
+        simple_block = ForwardCumsumBlock(Dense(dense_w, dense_b, identity))
         
         x_simple = ones(Float32, 1, 5, 1) # 1 feature, 5 steps, 1 batch
+        # Dense output: all 1s
+        # Cumsum: 1, 2, 3, 4, 5
+        # Average: 1/1, 2/2, 3/3, 4/4, 5/5 -> all 1s
         y_simple = simple_block(x_simple)
-        @test y_simple[:] ≈ [1.0, 2.0, 3.0, 4.0, 5.0]
+        @test y_simple[:] ≈ [1.0, 1.0, 1.0, 1.0, 1.0]
+        
+        # Another example: input [2, 4, 6]
+        x_growing = reshape(Float32[2, 4, 6], 1, 3, 1)
+        # Cumsum: [2, 6, 12]
+        # Divisors: [1, 2, 3]
+        # Average: [2, 3, 4]
+        y_growing = simple_block(x_growing)
+        @test y_growing[:] ≈ [2.0, 3.0, 4.0]
     end
 
     @testset "ReverseCumsumBlock" begin
@@ -56,11 +67,23 @@ using .SequenceTransform
         # Manual verification
         dense_w = ones(Float32, 1, 1)
         dense_b = zeros(Float32, 1)
-        simple_block = ReverseCumsumBlock(Dense(dense_w, dense_b, identity), identity)
+        simple_block = ReverseCumsumBlock(Dense(dense_w, dense_b, identity))
         
         x_simple = ones(Float32, 1, 5, 1)
+        # Dense output: all 1s
+        # Reverse Cumsum: 5, 4, 3, 2, 1
+        # Divisors: 5, 4, 3, 2, 1
+        # Average: 1, 1, 1, 1, 1
         y_simple = simple_block(x_simple)
-        @test y_simple[:] ≈ [5.0, 4.0, 3.0, 2.0, 1.0]
+        @test y_simple[:] ≈ [1.0, 1.0, 1.0, 1.0, 1.0]
+        
+        # Another example: input [6, 4, 2]
+        x_growing = reshape(Float32[6, 4, 2], 1, 3, 1)
+        # Reverse Cumsum: [12, 6, 2]
+        # Divisors: [3, 2, 1]
+        # Average: [4, 3, 2]
+        y_growing = simple_block(x_growing)
+        @test y_growing[:] ≈ [4.0, 3.0, 2.0]
     end
 
     @testset "ScanMixer" begin

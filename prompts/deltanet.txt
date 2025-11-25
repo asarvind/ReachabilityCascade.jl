@@ -1,0 +1,35 @@
+I am working on a neural network that computes solution trajectories consisting of state and input trajectories. 
+The network works recursively. In any recursion, it takes as input the transition model (function x, u -> x), 
+the objective constraint (function x-> 0, which has to be greater than zero to be satisfied) and an initial guess of 
+the state and input trajectories. It outputs another combined sequence as follows.
+
+The neural network consists of two blocks: Intermediate correction block and Terminal correction block.
+
+**Inputs:**
+- `x_guess`: Guess of state trajectory (from index 1 to N).
+- `u_guess`: Guess of input trajectory (from index 1 to N).
+- `x_0`: Initial state (index 0), provided by the user. This is constant and acts as a context.
+
+**Intermediate Correction Block:**
+- Uses multiple shooting to compute a result `x_res` based on `x_guess` and `u_guess`.
+- `x_res[1] = transition(x_0, u_guess[1])`.
+- `x_res[i] = transition(x_guess[i-1], u_guess[i])` for `i > 1`.
+- Computes `(delta_x_inter, delta_u_inter) = inter_network(x_res, x_guess, u_guess, x_0) - inter_network(x_guess, x_guess, u_guess, x_0)`.
+- Logic: If `x_guess` is dynamically feasible (i.e., `x_res == x_guess`), then `(delta_x_inter, delta_u_inter)` is zero.
+
+**Terminal Correction Block:**
+- Computes `(delta_x_term, delta_u_term) = term_sat(x_guess[end]) * term_network(x_res, x_guess, u_guess, x_0)`.
+- `term_sat(x)` is a scalar function measuring constraint violation (e.g., `max(0, -constraint(x))`).
+- `term_network` outputs a full sequence correction `(dx, du)`.
+
+**Total Correction:**
+- `x_new = x_guess + delta_x_inter + delta_x_term`
+- `u_new = u_guess + delta_u_inter + delta_u_term`
+- The correction applies to the sequence `x[1:N]` and `u[1:N]`.
+
+**Implementation Details:**
+- Create a separate folder `src/TrajectoryRefiner/`.
+- Use the `SequenceTransformation` network for processing sequences.
+- Use `x_0` as a context vector for the `SequenceTransformation`.
+- Concatenate `x_res`, `x_guess`, `u_guess` as input features for the networks.
+- Organize into appropriate files with clear variable names.

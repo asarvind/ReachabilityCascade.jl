@@ -30,7 +30,7 @@ function ScanMixer(in_dim::Int, hidden_dim::Int, out_dim::Int, activation=relu)
     direct_block = DirectBlock(in_dim, hidden_dim, activation)
     
     # Concatenated dimension will be 3 * hidden_dim
-    projection = Dense(3 * hidden_dim => out_dim)
+    projection = glu_mlp(3 * hidden_dim, hidden_dim, out_dim; act=activation)
     
     return ScanMixer(forward_block, reverse_block, direct_block, projection)
 end

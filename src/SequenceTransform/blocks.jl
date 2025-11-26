@@ -8,12 +8,12 @@ A block that applies a feedforward layer, then a cumulative sum along the sequen
 followed by layer normalization.
 """
 struct ForwardCumsumBlock{F}
-    dense::F
+    ff::F
 end
 
 function ForwardCumsumBlock(in_dim::Int, out_dim::Int, activation=relu)
-    dense = Dense(in_dim + 1 => out_dim, activation)
-    return ForwardCumsumBlock(dense)
+    ff = glu_mlp(in_dim + 1, out_dim, out_dim; act=activation)
+    return ForwardCumsumBlock(ff)
 end
 
 Flux.@layer ForwardCumsumBlock
@@ -42,7 +42,7 @@ function (m::ForwardCumsumBlock)(x::AbstractArray)
     # Concatenate positional encoding along feature dimension
     x_with_pos = vcat(x, pos_encoding)
     
-    h = m.dense(x_with_pos) # (out_dim, seq_len, batch)
+    h = m.ff(x_with_pos) # (out_dim, seq_len, batch)
     
     # Cumulative sum along sequence dimension (dim 2)
     h_cumsum = cumsum(h, dims=2)
@@ -64,12 +64,12 @@ A block that applies a feedforward layer, then a cumulative sum along the sequen
 followed by layer normalization.
 """
 struct ReverseCumsumBlock{F}
-    dense::F
+    ff::F
 end
 
 function ReverseCumsumBlock(in_dim::Int, out_dim::Int, activation=relu)
-    dense = Dense(in_dim + 1 => out_dim, activation)
-    return ReverseCumsumBlock(dense)
+    ff = glu_mlp(in_dim + 1, out_dim, out_dim; act=activation)
+    return ReverseCumsumBlock(ff)
 end
 
 Flux.@layer ReverseCumsumBlock
@@ -96,7 +96,7 @@ function (m::ReverseCumsumBlock)(x::AbstractArray)
     # Concatenate positional encoding along feature dimension
     x_with_pos = vcat(x, pos_encoding)
     
-    h = m.dense(x_with_pos)
+    h = m.ff(x_with_pos)
     
     # Reverse cumulative sum along sequence dimension (dim 2)
     # We can reverse, cumsum, then reverse back.
@@ -121,15 +121,15 @@ end
 A simple feedforward block with activation, no cumsum or normalization.
 """
 struct DirectBlock{F}
-    dense::F
+    ff::F
 end
 
 function DirectBlock(in_dim::Int, out_dim::Int, activation=relu)
-    return DirectBlock(Dense(in_dim => out_dim, activation))
+    return DirectBlock(glu_mlp(in_dim, out_dim, out_dim; act=activation))
 end
 
 Flux.@layer DirectBlock
 
 function (m::DirectBlock)(x::AbstractArray)
-    return m.dense(x)
+    return m.ff(x)
 end

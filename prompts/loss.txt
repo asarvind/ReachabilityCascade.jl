@@ -1,0 +1,7 @@
+====== Below is for loss of correction network =================
+
+
+Let us define the loss function as follows.  
+For any guess state trajectory guess x_guess and result trajectory x_res obtained by multiple shooting (not single shooting) from various positions of x_guess and x_0 being initial, the trajectory mismatch error can be defined by a user defined custom error function that takes as input two arguments, the x_res and x_guess.  We also have the terminal cost function which computes another cost based on the terminal state of x_guess. We add these two errors.
+
+Write a loss function that takes as input the correction network, x_guess_init, u_guess_init, terminal cost function,  trajectory mismatch function, and number of steps.  It computes the x_res after iterating through a few refine steps and consider the final guess as x_guess, u_guess.  Then use it to compute final x_res.  Calculate loss using x_guess and x_res.  Please change the variable names if you find more elegant names, but maintain consistency with earlier naming.

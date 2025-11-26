@@ -33,15 +33,29 @@ function GLU(sizes::Pair{<:Integer,<:Integer}; act = Flux.σ, bias::Bool = true)
     return GLU(d, act)
 end
 
-# Forward pass for vector or (features, batch) matrix inputs
-function (m::GLU)(x::AbstractVecOrMat)
+# Forward pass for vector, (features, batch) matrices, or (features, seq_len, batch) tensors.
+function (m::GLU)(x::AbstractArray)
     # Ensure inputs are Float32 (useful if upstream data is Float64/Int; works on CPU/GPU)
     x32 = Float32.(x)
-    y = m.dense(x32)
-    o = size(y, 1) ÷ 2
-    A = @view y[1:o, :]
-    B = @view y[o+1:end, :]
-    return A .* m.act(B)
+    if ndims(x32) == 1 || ndims(x32) == 2
+        y = m.dense(x32)
+        o = size(y, 1) ÷ 2
+        A = @view y[1:o, :]
+        B = @view y[o+1:end, :]
+        return A .* m.act(B)
+    elseif ndims(x32) == 3
+        # Flatten time and batch, apply GLU, then reshape back.
+        f, t, b = size(x32)
+        x_flat = reshape(x32, f, t * b)
+        y = m.dense(x_flat)
+        o = size(y, 1) ÷ 2
+        A = @view y[1:o, :]
+        B = @view y[o+1:end, :]
+        out_flat = A .* m.act(B)                 # (o, t*b)
+        return reshape(out_flat, o, t, b)
+    else
+        error("Unsupported input dimensions for GLU: $(ndims(x))")
+    end
 end
 
 # Handy size info: returns (in, out)

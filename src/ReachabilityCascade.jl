@@ -59,6 +59,6 @@ export ScanMixer, SequenceTransformation
 
 include("TrajectoryRefiner/TrajectoryRefiner.jl")
 using .TrajectoryRefiner
-export CorrectionNetwork, RefinerSolver, step_refiner
+export CorrectionNetwork, refine
 
 end

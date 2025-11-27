@@ -1,41 +1,61 @@
 using Flux
 
 """
-    refinement_grads(network, transition_fn, term_cost_fn, mismatch_fn, x_guess_init, u_guess_init, x_0, steps::Integer; backprop_steps::Integer=1, target::Union{Nothing,AbstractArray}=nothing, imitation_weight::Real=1)
+    refinement_loss(network, transition_fn, term_cost_fn, mismatch_fn, sample::ShootingBundle, steps::Integer; imitation_weight::Real=1)
 
-Compute gradients of the correction `network` parameters for the refinement loss. Refinement is unrolled for `steps` iterations; only the last `backprop_steps` participate in backpropagation (earlier steps are outside the gradient tape), so `backprop_steps` defaults to 1. Returns the gradient object for `network`.
+Compute a loss as the sum of a trajectory mismatch cost and a terminal cost after applying `steps` refinement iterations.
 
 - `network`: The `CorrectionNetwork`.
 - `transition_fn`: Function `(x_prev_seq, u_seq) -> x_next_seq` that supports batched sequences.
 - `term_cost_fn`: Function `x -> val` that supports batched terminal states; negative means satisfied and positive means violation.
 - `mismatch_fn`: Function `(x_res, x_guess) -> cost` comparing residual and guess trajectories.
-- `x_guess_init`, `u_guess_init`: Initial state/input guesses (state_dim, seq_len, batch) and (input_dim, seq_len, batch).
-- `x_0`: Initial state context (state_dim, batch).
-- `steps`: Total refinement iterations.
-- `backprop_steps`: Number of trailing steps kept in the gradient tape (default 1, clamped to `steps`).
-- `target`: Optional target state trajectory for imitation learning.
+- `sample`: `ShootingBundle` carrying `x_guess` (including the initial state), `u_guess`, and optional `x_target` (imitation trajectory over post-initial states).
+- `steps`: Number of refinement iterations.
+- `imitation_weight`: Weight applied to the imitation loss factor (default 1).
+"""
+function refinement_loss(network, transition_fn, term_cost_fn, mismatch_fn,
+                         sample::ShootingBundle, steps::Integer;
+                         imitation_weight::Real=1)
+    # Apply refinement, then evaluate the residual and terminal cost on the final guess.
+    refined = network(sample, transition_fn, term_cost_fn, steps)
+    x_res = _rollout_guess(refined, transition_fn)
+    x_body = selectdim(refined.x_guess, 2, 2:size(refined.x_guess, 2))
+    objective_loss = mismatch_fn(x_res, x_body) + term_cost_fn(selectdim(refined.x_guess, 2, size(refined.x_guess, 2)))
+
+    # Optional imitation loss on the refined state trajectory.
+    if refined.x_target === nothing
+        return objective_loss
+    else
+        imitation_loss = mismatch_fn(x_body, refined.x_target)
+        return objective_loss * (1 + imitation_weight * imitation_loss)
+    end
+end
+
+"""
+    refinement_grads(network, transition_fn, term_cost_fn, mismatch_fn, sample::ShootingBundle, steps::Integer; imitation_weight::Real=1)
+
+Compute refinement loss and parameter gradients for `network` over a `ShootingBundle`. Refinement is
+unrolled for `steps`. Returns `(grads, loss)`, with `grads` targeting `network`.
+
+- `network`: The `CorrectionNetwork`.
+- `transition_fn`: Function `(x_prev_seq, u_seq) -> x_next_seq` that supports batched sequences.
+- `term_cost_fn`: Function `x -> val` that supports batched terminal states; negative means satisfied and positive means violation.
+- `mismatch_fn`: Function `(x_res, x_guess) -> cost` comparing residual and guess trajectories.
+- `sample`: `ShootingBundle` carrying `x_guess` (with initial state), `u_guess`, and optional `x_target`.
+- `steps`: Total refinement iterations (negative or zero yields the original `sample`).
 - `imitation_weight`: Weight applied to the imitation loss factor (default 1).
 """
 function refinement_grads(network, transition_fn, term_cost_fn, mismatch_fn,
-                          x_guess_init::AbstractArray, u_guess_init::AbstractArray, x_0::AbstractArray, steps::Integer;
-                          backprop_steps::Integer=1, target::Union{Nothing,AbstractArray}=nothing, imitation_weight::Real=1)
+                          sample::ShootingBundle, steps::Integer;
+                          imitation_weight::Real=1)
     total_steps = max(steps, 0)
-    bsteps = clamp(backprop_steps, 0, total_steps)
-    fsteps = total_steps - bsteps
-
-    # Run truncated forward refinement; these steps are not part of the backward tape.
-    if fsteps > 0
-        x_fwd, u_fwd = refine(network, transition_fn, term_cost_fn, x_guess_init, u_guess_init, x_0, fsteps)
-    else
-        x_fwd = x_guess_init
-        u_fwd = u_guess_init
-    end
-
+    loss_ref = Ref{Float32}()
     grads = Flux.gradient(network) do m
-        # Backprop only through the remaining bsteps of refinement.
-        refinement_loss(m, transition_fn, term_cost_fn, mismatch_fn, x_fwd, u_fwd, x_0, bsteps;
-                        target=target, imitation_weight=imitation_weight)
+        l = refinement_loss(m, transition_fn, term_cost_fn, mismatch_fn, sample, total_steps;
+                            imitation_weight=imitation_weight)
+        loss_ref[] = Float32(l)
+        l
     end
 
-    return grads[1]
+    return grads[1], loss_ref[]
 end

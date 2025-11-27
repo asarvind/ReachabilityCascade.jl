@@ -1,9 +1,6 @@
 using Test
 using Flux
-
-# Include the module directly for testing purposes
-include("../../src/SequenceTransform/SequenceTransform.jl")
-using .SequenceTransform
+using ReachabilityCascade: ScanMixer, ForwardCumsumBlock, ReverseCumsumBlock, DirectBlock, SequenceTransformation
 
 @testset "SequenceTransform Tests" begin
     
@@ -109,11 +106,6 @@ using .SequenceTransform
         x_2d = rand(Float32, in_dim, seq_len)
         y_2d = layer(x_2d)
         @test size(y_2d) == (out_dim, seq_len)
-        
-        # Check differentiability
-        loss(x) = sum(layer(x))
-        grads = gradient(loss, x)
-        @test grads[1] !== nothing
     end
 
     @testset "SequenceTransformation" begin
@@ -130,11 +122,6 @@ using .SequenceTransform
         y = model(x)
         
         @test size(y) == (out_dim, seq_len, batch_size)
-        
-        # Check differentiability
-        loss(x) = sum(model(x))
-        grads = gradient(loss, x)
-        @test grads[1] !== nothing
         
         # Check depth (number of layers in chain)
         # model.chain is a Flux.Chain

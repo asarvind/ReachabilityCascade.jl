@@ -31,6 +31,15 @@ end
 using .GatedLinearUnits: GLU, glu_mlp
 export GLU, glu_mlp
 
+module TransitionModels
+    using Flux
+    using ..GatedLinearUnits: GLU, glu_mlp
+    include("TransitionModels/transition_network.jl")
+    include("TransitionModels/training.jl")
+end
+using .TransitionModels: TransitionNetwork, train!, fit_transition_network, save_transition_network, load_transition_network, build
+export TransitionNetwork, train!, fit_transition_network, save_transition_network, load_transition_network, build
+
 
 
 
@@ -49,6 +58,8 @@ module CarDataGeneration
     using ..ControlUtilities: linearize, lqr_lyap, correct_trajectory
     using ..CarDynamics: discrete_vehicles
     include("examples/car/datageneration.jl")
+    include("examples/car/surrogatedatagen.jl")
+    export generate_transition_dataset
 end
 
 include("SequenceTransform/SequenceTransform.jl")
@@ -59,6 +70,6 @@ export ScanMixer, SequenceTransformation
 
 include("TrajectoryRefiner/TrajectoryRefiner.jl")
 using .TrajectoryRefiner
-export CorrectionNetwork, refine
+export CorrectionNetwork
 
 end

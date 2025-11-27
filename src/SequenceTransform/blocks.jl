@@ -1,4 +1,5 @@
 using Flux
+using ChainRulesCore
 
 
 """
@@ -22,19 +23,19 @@ function (m::ForwardCumsumBlock)(x::AbstractArray)
     # x shape: (features + context_dim, seq_len, batch)
     seq_len = size(x, 2)
     
-    # Create positional encoding k/(k+1) for k=1,2,...,seq_len  
-    # Use same device as x (GPU/CPU compatible)
+    # Build positions directly on the same device as x (and ignore gradients through them).
     T = eltype(x)
-    # Build positions directly on the same device as x
-    k = similar(x, seq_len)
-    broadcast!(i -> T(i), k, 1:seq_len)
-    pos_encoding = k ./ (k .+ T(1))
+    k_vec = ignore_derivatives() do
+        ones_vec = similar(x, seq_len)
+        fill!(ones_vec, one(T))
+        cumsum(ones_vec)
+    end
+    pos_encoding = k_vec ./ (k_vec .+ one(T))     # elementwise k/(k+1)
     
     # Reshape and broadcast positional encoding to match input dimensions
     if ndims(x) == 3
         batch_size = size(x, 3)
-        # keep broadcast on-device; avoid CPU `ones` on GPU by adding zeros of the right shape
-        pos_encoding = reshape(pos_encoding, 1, seq_len, 1) .+ fill!(similar(x, 1, 1, batch_size), 0)
+        pos_encoding = repeat(reshape(pos_encoding, 1, seq_len, 1), 1, 1, batch_size)
     else
         pos_encoding = reshape(pos_encoding, 1, seq_len)
     end
@@ -49,9 +50,9 @@ function (m::ForwardCumsumBlock)(x::AbstractArray)
     
     # Compute cumulative average
     if ndims(h) == 3
-        d = reshape(k, 1, seq_len, 1)
+        d = reshape(k_vec, 1, seq_len, 1)
     else
-        d = reshape(k, 1, seq_len)
+        d = reshape(k_vec, 1, seq_len)
     end
     
     return h_cumsum ./ d
@@ -77,18 +78,19 @@ Flux.@layer ReverseCumsumBlock
 function (m::ReverseCumsumBlock)(x::AbstractArray)
     seq_len = size(x, 2)
     
-    # Create positional encoding k/(k+1) for k=1,2,...,seq_len, then reverse it
-    # Use same device as x (GPU/CPU compatible)
+    # Positional encoding k/(k+1) on the same device as x (no host/device copies)
     T = eltype(x)
-    # Build positions directly on the same device as x
-    k = similar(x, seq_len)
-    broadcast!(i -> T(i), k, 1:seq_len)
-    pos_encoding = reverse(k ./ (k .+ T(1)))
+    k_vec = ignore_derivatives() do
+        ones_vec = similar(x, seq_len)
+        fill!(ones_vec, one(T))
+        cumsum(ones_vec)
+    end
+    pos_encoding = reverse(k_vec ./ (k_vec .+ one(T)))
     
     # Reshape and broadcast positional encoding to match input dimensions
     if ndims(x) == 3
         batch_size = size(x, 3)
-        pos_encoding = reshape(pos_encoding, 1, seq_len, 1) .+ fill!(similar(x, 1, 1, batch_size), 0)
+        pos_encoding = repeat(reshape(pos_encoding, 1, seq_len, 1), 1, 1, batch_size)
     else
         pos_encoding = reshape(pos_encoding, 1, seq_len)
     end
@@ -107,9 +109,9 @@ function (m::ReverseCumsumBlock)(x::AbstractArray)
     # At index t (1-based), we have summed elements t, t+1, ..., T.
     # The count is T - t + 1.
     if ndims(h) == 3
-        d = reshape(reverse(k), 1, seq_len, 1)
+        d = reshape(reverse(k_vec), 1, seq_len, 1)
     else
-        d = reshape(reverse(k), 1, seq_len)
+        d = reshape(reverse(k_vec), 1, seq_len)
     end
     
     return h_cumsum ./ d

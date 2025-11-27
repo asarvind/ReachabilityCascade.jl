@@ -71,9 +71,9 @@ end
 
 """
     glu_mlp(in_dim::Integer, hidden::Integer, out_dim::Integer;
-            n_glu::Integer=2, act=Flux.σ, bias::Bool=true)
+            n_glu::Integer=2, act=Flux.σ, bias::Bool=true, zero_init::Bool=false)
 
-Build a GLU-based multi-layer perceptron (MLP)amp.
+Build a GLU-based multi-layer perceptron (MLP).
 The network has `n_glu` GLU blocks followed by a final linear `Dense` layer
 (projecting to `out_dim`). Accepts and returns arrays shaped `(features, batch)`.
 
@@ -86,6 +86,7 @@ The network has `n_glu` GLU blocks followed by a final linear `Dense` layer
 - `n_glu=2`  : number of GLU blocks before the final Dense
 - `act`      : gate activation for each GLU (default `Flux.σ`)
 - `bias=true`: include bias in dense layers
+- `zero_init=false`: if true, initialize the final Dense to zeros.
 
 # Returns
 `Chain` consisting of `[GLU, ..., GLU, Dense]`.
@@ -99,7 +100,7 @@ function glu_mlp(in_dim::Integer, hidden::Integer, out_dim::Integer;
         push!(layers, Dense(hidden=>hidden, leakyrelu))
         d = hidden
     end
-    
+
     if zero_init
         push!(layers, Dense(zeros(Float32, out_dim, d)))
     else

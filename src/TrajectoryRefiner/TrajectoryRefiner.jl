@@ -7,8 +7,9 @@ include("sample.jl")
 include("networks.jl")
 include("gradients.jl")
 include("training.jl")
-using .TrajectoryRefinerTraining: train_refiner!
+using .TrajectoryRefinerTraining: train!
 
-export ShootingBundle, CorrectionNetwork, refinement_loss, refinement_grads, train_refiner!
+export ShootingBundle, RefinementModel, refinement_loss, refinement_grads, train!, build,
+       save_refinement_model, load_refinement_model
 
 end

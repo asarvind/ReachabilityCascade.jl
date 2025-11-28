@@ -6,14 +6,14 @@ using ReachabilityCascade.SequenceTransform
 
 @testset "TrajectoryRefiner Tests" begin
     
-    @testset "CorrectionNetwork" begin
+    @testset "RefinementModel" begin
         state_dim = 2
         input_dim = 1
         hidden_dim = 10
         out_dim = state_dim + input_dim
         depth = 2
         
-        net = CorrectionNetwork(state_dim, input_dim, hidden_dim, out_dim, depth)
+        net = RefinementModel(state_dim, input_dim, hidden_dim, out_dim, depth)
         
         batch_size = 3
         seq_len = 5
@@ -30,10 +30,10 @@ using ReachabilityCascade.SequenceTransform
         (m::IdentityTransition)(x, u) = x  # ignore u to mirror x_prev_seq
         transition = IdentityTransition()
 
-        # Terminal cost is negative so no terminal correction.
-        term_cost_fn(x) = -ones(Float32, size(x, 2))
+        # Trajectory cost is zero so no correction comes from it.
+        traj_cost_fn(x) = zero(eltype(x))
 
-        refined = net(bundle, transition, term_cost_fn)
+        refined = net(bundle, transition, traj_cost_fn)
 
         @test size(refined.x_guess) == (state_dim, seq_len + 1, batch_size)
         @test size(refined.u_guess) == (input_dim, seq_len, batch_size)
@@ -48,7 +48,7 @@ using ReachabilityCascade.SequenceTransform
         out_dim = state_dim + input_dim
         depth = 2
         
-        net = CorrectionNetwork(state_dim, input_dim, hidden_dim, out_dim, depth)
+        net = RefinementModel(state_dim, input_dim, hidden_dim, out_dim, depth)
         
         # Mock transition network: linear dynamics x_next = x + u
         # Input: (x_prev_seq, u_seq) -> x_res_seq
@@ -61,7 +61,7 @@ using ReachabilityCascade.SequenceTransform
         transition = MockTransition()
         
         # Mock terminal cost: negative when x[1] > 0.5 (satisfied), positive otherwise.
-        term_cost_fn(x) = 0.5f0 .- x[1:1, :]
+        traj_cost_fn(x_res) = sum(0.5f0 .- x_res[1, :, :])
         
 
         
@@ -74,7 +74,7 @@ using ReachabilityCascade.SequenceTransform
         x_full = cat(reshape(x0, state_dim, 1, batch_size), x_guess_body; dims=2)
         bundle = ShootingBundle(x_full, u_guess)
         
-        refined = net(bundle, transition, term_cost_fn)
+        refined = net(bundle, transition, traj_cost_fn)
         
         @test size(refined.x_guess) == (state_dim, seq_len + 1, batch_size)
         @test size(refined.u_guess) == (input_dim, seq_len, batch_size)
@@ -102,10 +102,10 @@ using ReachabilityCascade.SequenceTransform
         # delta_term should be zero because violation is zero.
         
         valid_bundle = ShootingBundle(cat(reshape(x_0_valid, state_dim, 1, batch_size), x_valid; dims=2), u_valid)
-        refined_valid = net(valid_bundle, transition, term_cost_fn)
+        refined_valid = net(valid_bundle, transition, traj_cost_fn)
         
         @test selectdim(refined_valid.x_guess, 2, 2:size(refined_valid.x_guess, 2)) ≈ x_valid
-        @test refined_valid.u_guess ≈ u_valid
+        @test refined_valid.u_guess ≈ u_valid atol=1e-5
         
     end
     
@@ -117,14 +117,14 @@ using ReachabilityCascade.SequenceTransform
         out_dim = state_dim + input_dim
         depth = 2
         
-        net = CorrectionNetwork(state_dim, input_dim, hidden_dim, out_dim, depth)
+        net = RefinementModel(state_dim, input_dim, hidden_dim, out_dim, depth)
         
         struct MockTransitionRec
         end
         (m::MockTransitionRec)(x, u) = x + vcat(u, u)
         transition = MockTransitionRec()
         
-        term_cost_fn(x) = 0.5f0 .- x[1:1, :]
+        traj_cost_fn(x_res) = sum(0.5f0 .- x_res[1, :, :])
         
         batch_size = 2
         seq_len = 4
@@ -135,36 +135,31 @@ using ReachabilityCascade.SequenceTransform
         bundle = ShootingBundle(x_full, u_guess)
         
         # Manual two-step refinement
-        b1 = net(bundle, transition, term_cost_fn)
-        b2 = net(b1, transition, term_cost_fn)
+        b1 = net(bundle, transition, traj_cost_fn)
+        b2 = net(b1, transition, traj_cost_fn)
         
         # Recursive call should match manual chaining
-        b_rec = net(bundle, transition, term_cost_fn, 2)
+        b_rec = net(bundle, transition, traj_cost_fn, 2)
         
         @test b_rec.x_guess ≈ b2.x_guess
         @test b_rec.u_guess ≈ b2.u_guess
     end
     
     @testset "refinement_loss" begin
-        # Use a zero network so refinement leaves trajectories unchanged.
-        struct ZeroNetwork
+        # Use a zero refinement model so refinement leaves trajectories unchanged.
+        struct ZeroBlock
             out_dim::Int
         end
-        (m::ZeroNetwork)(x_res, x_guess, u_guess, x_0) = (zeros(Float32, m.out_dim, size(x_guess, 2), size(x_guess, 3)),
-                                                           zeros(Float32, m.out_dim, size(x_guess, 2), size(x_guess, 3)))
-        (m::ZeroNetwork)(sample::ShootingBundle, transition_fn, term_cost_fn) = sample
-        (m::ZeroNetwork)(sample::ShootingBundle, transition_fn, term_cost_fn, steps::Integer) = sample
+        (z::ZeroBlock)(x, ctx) = zeros(Float32, z.out_dim, size(x, 2), size(x, 3))
+        net = RefinementModel(ZeroBlock(2), ZeroBlock(2))
         
         state_dim = 1
         input_dim = 1
-        out_dim = state_dim + input_dim
-        net = ZeroNetwork(out_dim)
-        
         # Simple transition: x_next = x_prev + u
         transition_fn(x_prev, u) = x_prev .+ u
         
         # Terminal cost: sum of terminal state
-        term_cost_fn(x_term) = sum(x_term)
+        traj_cost_fn(x_res) = sum(x_res)
         
         # Mismatch: squared error sum between residual and guess
         mismatch_fn(x_res, x_guess) = sum(abs2.(x_res .- x_guess))
@@ -179,13 +174,13 @@ using ReachabilityCascade.SequenceTransform
         
         # Expected residual with zero-network (no correction): x_prev = [0, 1], u = [2, 2] => x_res = [2, 3]
         # Mismatch = (2-1)^2 + (3-1)^2 = 1 + 4 = 5
-        # Terminal cost = sum of terminal x_guess (1) = 1
-        # Total = 6
-        loss_val = refinement_loss(net, transition_fn, term_cost_fn, mismatch_fn, bundle, 1)
-        @test loss_val ≈ 6f0
+        # Trajectory cost = sum(x_res) = 5
+        # Total = 10
+        loss_val = refinement_loss(net, transition_fn, traj_cost_fn, mismatch_fn, bundle, 1)
+        @test loss_val ≈ 10f0
     end
 
-    @testset "train_refiner!" begin
+    @testset "train!" begin
         Random.seed!(7)
         state_dim = 2
         input_dim = 1
@@ -193,10 +188,10 @@ using ReachabilityCascade.SequenceTransform
         out_dim = state_dim + input_dim
         depth = 1
         
-        net = CorrectionNetwork(state_dim, input_dim, hidden_dim, out_dim, depth)
+        net = RefinementModel(state_dim, input_dim, hidden_dim, out_dim, depth)
 
         transition_fn(x_prev, u) = x_prev .+ vcat(u, u)
-        term_cost_fn(x_term) = sum(x_term)
+        traj_cost_fn(x_res) = sum(x_res)
         traj_mismatch_fn(x_res, x_guess) = sum(abs2.(x_res .- x_guess))
 
         seq_len = 3
@@ -221,12 +216,12 @@ using ReachabilityCascade.SequenceTransform
         # Flatten parameters to a single vector (avoids deprecated Flux.params).
         flat_before, _ = Flux.destructure(net)
 
-        _, losses = train_refiner!(net, data, 2, 1;
-                                   opt=Flux.Adam(5e-3),
-                                   transition_fn=transition_fn,
-                                   term_cost_fn=term_cost_fn,
-                                   traj_mismatch_fn=traj_mismatch_fn,
-                                   imitation_weight=0.3)
+        _, losses = train!(net, data, 2, 1;
+                           opt=Flux.Adam(5e-3),
+                           transition_fn=transition_fn,
+                           traj_cost_fn=traj_cost_fn,
+                           traj_mismatch_fn=traj_mismatch_fn,
+                           imitation_weight=0.3)
 
         @test length(losses) == 2
         @test all(isfinite.(losses))

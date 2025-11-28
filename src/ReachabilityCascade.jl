@@ -33,12 +33,12 @@ export GLU, glu_mlp
 
 module TransitionModels
     using Flux
-    using ..GatedLinearUnits: GLU, glu_mlp
-    include("TransitionModels/transition_network.jl")
-    include("TransitionModels/training.jl")
+using ..GatedLinearUnits: GLU, glu_mlp
+include("TransitionModels/transition_network.jl")
+include("TransitionModels/training.jl")
 end
-using .TransitionModels: TransitionNetwork, train!, fit_transition_network, save_transition_network, load_transition_network, build
-export TransitionNetwork, train!, fit_transition_network, save_transition_network, load_transition_network, build
+using .TransitionModels: TransitionNetwork, fit_transition_network, save_transition_network, load_transition_network, build
+export TransitionNetwork, fit_transition_network, save_transition_network, load_transition_network, build
 
 
 
@@ -70,6 +70,6 @@ export ScanMixer, SequenceTransformation
 
 include("TrajectoryRefiner/TrajectoryRefiner.jl")
 using .TrajectoryRefiner
-export CorrectionNetwork
+export RefinementModel, train!, build, save_refinement_model, load_refinement_model
 
 end

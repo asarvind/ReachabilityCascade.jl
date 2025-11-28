@@ -1,8 +1,38 @@
-module VehicleExp
+### A Pluto.jl notebook ###
+# v0.20.17
 
+using Markdown
+using InteractiveUtils
+
+# ╔═╡ 329b39a0-cc1f-11f0-372b-33fb7f28c501
+begin
+using Pkg
+	
+link_path = joinpath(pwd(), "SymlinkReachabilityCascade")
+if islink(link_path)
+    rm(link_path)
+elseif ispath(link_path)
+    error("A non-symlink file or directory already exists at $link_path. Aborting.")
+end
+symlink(pwd(), link_path)
+
+Pkg.activate("SymlinkReachabilityCascade")
+end
+
+# ╔═╡ 6b799ba4-d33a-4a98-9623-46ad55a186df
+begin
+	
 using Random
 using JLD2: load
 import ReachabilityCascade
+import ReachabilityCascade.TrajectoryRefiner: rollout_guess
+import ReachabilityCascade.CarDataGeneration: discrete_vehicles
+import ReachabilityCascade: TransitionNetwork, load_transition_network
+	
+end
+
+# ╔═╡ 02466dca-7603-4891-9769-dc779fd65dc8
+begin
 
 """
     VehicleTrajectoryIterator(epsilon_state::AbstractVector; epsilon_input=nothing,
@@ -52,6 +82,9 @@ function VehicleTrajectoryIterator(epsilon_state::AbstractVector, epsilon_input:
                                      1, 1, max_iter_val, max_epoch)
 end
 
+end
+
+# ╔═╡ 879af5e1-9bb4-4398-bc8b-eda26a775d40
 function Base.iterate(iter::VehicleTrajectoryIterator, state::Tuple{Int,Int}=(iter.iter, iter.epoch))
     isempty(iter.data) && return nothing
 
@@ -94,25 +127,20 @@ function Base.iterate(iter::VehicleTrajectoryIterator, state::Tuple{Int,Int}=(it
     return bundle, next_state
 end
 
-"""
-    example(; epsilon_state_fill=0.05, max_epoch=1, max_iter=3, path="data/car/trajectories.jld2")
-
-Run a short demonstration of the iterator and print the shapes of a few sampled bundles.
-"""
-function example(; epsilon_state_fill=0.05, max_epoch::Int=1, max_iter::Int=3,
-                 path::AbstractString="data/car/trajectories.jld2")
-    data = load(path)
-    dataset = haskey(data, "data") ? data["data"] : data
-    eps_state = fill(epsilon_state_fill, size(dataset[1].state_trajectory, 1))
-    itr = VehicleTrajectoryIterator(eps_state; max_epoch=max_epoch, max_iter=max_iter, path=path)
-    for (i, sample) in enumerate(itr)
-        @info "Sample $i" x_guess=size(sample.x_guess) u_guess=size(sample.u_guess)
-    end
-    return nothing
+# ╔═╡ eab311cb-4227-4968-8ecf-52e07780b513
+let 
+	ds = discrete_vehicles(0.25)
+	eps_state = [1.0, 0.5, 0.1, 1.0, 0.1, 0.1, 0.005, 1.0, 0.5, 1.0, 1.0, 0.5, 1.0]*2
+	eps_input = [0.1, 1.0]
+	iterator = VehicleTrajectoryIterator(eps_state, eps_input; max_epoch=1, max_iter=3)
+	sb, _ = iterate(iterator)
+	transition_model = load_transition_network("data/car/vehiclenet.jld2")
+	rollout_guess(sb, transition_model), sb.x_target
 end
 
-if abspath(PROGRAM_FILE) == @__FILE__
-    example()
-end
-
-end # module
+# ╔═╡ Cell order:
+# ╠═329b39a0-cc1f-11f0-372b-33fb7f28c501
+# ╠═6b799ba4-d33a-4a98-9623-46ad55a186df
+# ╠═02466dca-7603-4891-9769-dc779fd65dc8
+# ╠═879af5e1-9bb4-4398-bc8b-eda26a775d40
+# ╠═eab311cb-4227-4968-8ecf-52e07780b513

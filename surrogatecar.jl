@@ -51,18 +51,6 @@ let
 	# scl = Float32.(ones(7))
 	opt = Flux.OptimiserChain(Flux.ClipNorm(), Flux.Adam(1e-3))
 	# @time build(TransitionNetwork, thisdata, save_net; hidden_dim=128, depth=4, batchsize=25, scale=scl, epochs=60, hard_mining=true, opt=opt)
-	@time build(TransitionNetwork, thisdata, save_sprecher; use_sprecher=true, hidden_dim=128, depth=4, batchsize=25, scale=scl, epochs=10, hard_mining=true, opt=opt)
-end
-
-# ╔═╡ d4d090a6-5735-4dd0-8101-3c7e6f07aa57
-let
-	trajdata = JLD2.load("data/car/trajectories.jld2", "data")
-	ind = rand(1:length(trajdata))
-	strj, utrj = trajdata[ind].state_trajectory, trajdata[ind].input_signal
-	thisnet = load_transition_network(save_net)
-	sprecher = load_transition_network(save_sprecher)
-	thisnet(strj[:, 1], utrj[:, 1:10]), sprecher(strj[:, 1], utrj[:, 1:10]), strj[:, 1:10]
-	
 end
 
 # ╔═╡ Cell order:
@@ -73,4 +61,3 @@ end
 # ╠═0badd5c9-c0d5-4588-a595-c8ad05e08d33
 # ╠═ca016b95-df0f-4b0b-8236-4a5e445d6cd1
 # ╠═ebce1d30-117c-4105-bec2-9eeeb290cc05
-# ╠═d4d090a6-5735-4dd0-8101-3c7e6f07aa57

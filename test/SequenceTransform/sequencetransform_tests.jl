@@ -10,7 +10,7 @@ using ReachabilityCascade: ScanMixer, ForwardCumsumBlock, ReverseCumsumBlock, Di
         seq_len = 10
         batch_size = 2
         
-        block = ForwardCumsumBlock(in_dim, out_dim)
+        block = ForwardCumsumBlock(in_dim, out_dim; max_seq_len=seq_len)
         x = rand(Float32, in_dim, seq_len, batch_size)
         
         y = block(x)
@@ -23,12 +23,11 @@ using ReachabilityCascade: ScanMixer, ForwardCumsumBlock, ReverseCumsumBlock, Di
         @test size(y_2d) == (out_dim, seq_len)
 
         # Manual verification
-        # Dense layer now receives 2 inputs: [feature, positional_encoding]
-        # For input with 1 feature, positional encoding is k/(k+1)
-        # Set weights to [1, 0] to ignore positional encoding and only use the feature
-        dense_w = hcat(ones(Float32, 1, 1), zeros(Float32, 1, 1))  # (1, 2) weight matrix
+        # Dense layer now receives 1 feature + positional bits; ignore positional channels.
+        pos_dim = max(1, ceil(Int, log2(seq_len)))
+        dense_w = hcat(ones(Float32, 1, 1), zeros(Float32, 1, pos_dim))  # (1, 1+pos_dim) weight matrix
         dense_b = zeros(Float32, 1)
-        simple_block = ForwardCumsumBlock(Dense(dense_w, dense_b, identity))
+        simple_block = ForwardCumsumBlock(Dense(dense_w, dense_b, identity); max_seq_len=seq_len)
         
         x_simple = ones(Float32, 1, 5, 1) # 1 feature, 5 steps, 1 batch
         # Dense output: all 1s (ignores positional encoding)
@@ -52,7 +51,7 @@ using ReachabilityCascade: ScanMixer, ForwardCumsumBlock, ReverseCumsumBlock, Di
         seq_len = 10
         batch_size = 2
         
-        block = ReverseCumsumBlock(in_dim, out_dim)
+        block = ReverseCumsumBlock(in_dim, out_dim; max_seq_len=seq_len)
         x = rand(Float32, in_dim, seq_len, batch_size)
         
         y = block(x)
@@ -67,9 +66,10 @@ using ReachabilityCascade: ScanMixer, ForwardCumsumBlock, ReverseCumsumBlock, Di
         # Manual verification
         # Dense layer now receives 2 inputs: [feature, positional_encoding]
         # Set weights to [1, 0] to ignore positional encoding and only use the feature
-        dense_w = hcat(ones(Float32, 1, 1), zeros(Float32, 1, 1))  # (1, 2) weight matrix
+        pos_dim = max(1, ceil(Int, log2(seq_len)))
+        dense_w = hcat(ones(Float32, 1, 1), zeros(Float32, 1, pos_dim))  # (1, 1+pos_dim)
         dense_b = zeros(Float32, 1)
-        simple_block = ReverseCumsumBlock(Dense(dense_w, dense_b, identity))
+        simple_block = ReverseCumsumBlock(Dense(dense_w, dense_b, identity); max_seq_len=seq_len)
         
         x_simple = ones(Float32, 1, 5, 1)
         # Dense output: all 1s (ignores positional encoding)
@@ -95,7 +95,7 @@ using ReachabilityCascade: ScanMixer, ForwardCumsumBlock, ReverseCumsumBlock, Di
         seq_len = 6
         batch_size = 2
         
-        layer = ScanMixer(in_dim, hidden_dim, out_dim)
+        layer = ScanMixer(in_dim, hidden_dim, out_dim; max_seq_len=seq_len)
         x = rand(Float32, in_dim, seq_len, batch_size)
         
         y = layer(x)
@@ -116,7 +116,7 @@ using ReachabilityCascade: ScanMixer, ForwardCumsumBlock, ReverseCumsumBlock, Di
         seq_len = 6
         batch_size = 2
         
-        model = SequenceTransformation(in_dim, hidden_dim, out_dim, depth)
+        model = SequenceTransformation(in_dim, hidden_dim, out_dim, depth; max_seq_len=seq_len)
         x = rand(Float32, in_dim, seq_len, batch_size)
         
         y = model(x)
@@ -140,7 +140,7 @@ using ReachabilityCascade: ScanMixer, ForwardCumsumBlock, ReverseCumsumBlock, Di
         # ScanMixer now expects the concatenated input if context_dim > 0
         # But ScanMixer constructor no longer takes context_dim.
         # We initialize it with total input dimension (in_dim + context_dim).
-        layer = ScanMixer(in_dim + context_dim, hidden_dim, out_dim)
+        layer = ScanMixer(in_dim + context_dim, hidden_dim, out_dim; max_seq_len=seq_len)
         
         x = rand(Float32, in_dim, seq_len, batch_size)
         c = rand(Float32, context_dim, batch_size)
@@ -156,7 +156,7 @@ using ReachabilityCascade: ScanMixer, ForwardCumsumBlock, ReverseCumsumBlock, Di
         # Test SequenceTransformation with context
         # SequenceTransformation handles the concatenation
         depth = 2
-        model = SequenceTransformation(in_dim, hidden_dim, out_dim, depth, context_dim)
+        model = SequenceTransformation(in_dim, hidden_dim, out_dim, depth, context_dim; max_seq_len=seq_len)
         y_chain = model(x, c)
         @test size(y_chain) == (out_dim, seq_len, batch_size)
         

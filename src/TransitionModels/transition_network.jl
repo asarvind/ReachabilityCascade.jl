@@ -25,7 +25,23 @@ function TransitionNetwork(state_dim::Int, input_dim::Int, hidden_dim::Int;
     return TransitionNetwork(net, state_dim, input_dim, hidden_dim, depth)
 end
 
+function _param_eltype(obj, default)
+    for t in Flux.trainable(obj)
+        if t isa AbstractArray
+            return eltype(t)
+        else
+            inner = _param_eltype(t, nothing)
+            inner !== nothing && return inner
+        end
+    end
+    return default
+end
+
 function (m::TransitionNetwork)(x::AbstractArray, u::AbstractArray)
+    # Align inputs to the eltype of the network parameters (avoids accidental promotion).
+    param_T = _param_eltype(m.model, eltype(x))
+    x = param_T.(x)
+    u = param_T.(u)
     # Supports (features, batch) or (features, time, batch)
     if ndims(x) == 2
         @assert size(x, 1) == m.state_dim "State dimension mismatch"

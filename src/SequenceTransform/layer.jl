@@ -1,7 +1,7 @@
 using Flux
 
 """
-    ScanMixer(in_dim::Int, hidden_dim::Int, out_dim::Int, activation=relu)
+    ScanMixer(in_dim::Int, hidden_dim::Int, out_dim::Int, activation=Flux.σ)
 
 A layer that processes the input sequence through three parallel paths:
 1. ForwardCumsumBlock
@@ -24,9 +24,9 @@ struct ScanMixer{A, B, C, P}
     projection::P
 end
 
-function ScanMixer(in_dim::Int, hidden_dim::Int, out_dim::Int, activation=relu)
-    forward_block = ForwardCumsumBlock(in_dim, hidden_dim, activation)
-    reverse_block = ReverseCumsumBlock(in_dim, hidden_dim, activation)
+function ScanMixer(in_dim::Int, hidden_dim::Int, out_dim::Int, activation=Flux.σ; max_seq_len::Int=512)
+    forward_block = ForwardCumsumBlock(in_dim, hidden_dim, activation; max_seq_len=max_seq_len)
+    reverse_block = ReverseCumsumBlock(in_dim, hidden_dim, activation; max_seq_len=max_seq_len)
     direct_block = DirectBlock(in_dim, hidden_dim, activation)
     
     # Concatenated dimension will be 3 * hidden_dim
@@ -39,7 +39,7 @@ Flux.@layer ScanMixer
 
 function (m::ScanMixer)(x::AbstractArray)
     # x shape: (in_dim + context_dim, seq_len, batch)
-    
+
     out_fwd = m.forward_block(x)
     out_rev = m.reverse_block(x)
     out_dir = m.direct_block(x)

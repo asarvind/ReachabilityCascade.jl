@@ -1,5 +1,8 @@
 module ReachabilityCascade
 
+# Shared builder function to be extended by submodules.
+function build end
+
 module ControlSystem
     using Random, LinearAlgebra
     using LazySets
@@ -37,8 +40,8 @@ using ..GatedLinearUnits: GLU, glu_mlp
 include("TransitionModels/transition_network.jl")
 include("TransitionModels/training.jl")
 end
-using .TransitionModels: TransitionNetwork, fit_transition_network, save_transition_network, load_transition_network, build
-export TransitionNetwork, fit_transition_network, save_transition_network, load_transition_network, build
+using .TransitionModels: TransitionNetwork, fit_transition_network, save_transition_network, load_transition_network
+export TransitionNetwork, fit_transition_network, save_transition_network, load_transition_network
 
 
 
@@ -70,6 +73,8 @@ export ScanMixer, SequenceTransformation
 
 include("TrajectoryRefiner/TrajectoryRefiner.jl")
 using .TrajectoryRefiner
-export RefinementModel, train!, build, save_refinement_model, load_refinement_model
+export RefinementModel, train!, save_refinement_model, load_refinement_model
+
+export build
 
 end

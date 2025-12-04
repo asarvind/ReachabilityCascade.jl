@@ -1,7 +1,7 @@
 using Flux
 
 """
-    SequenceTransformation(in_dim::Int, hidden_dim::Int, out_dim::Int, depth::Int, context_dim::Int=0, activation=relu)
+    SequenceTransformation(in_dim::Int, hidden_dim::Int, out_dim::Int, depth::Int, context_dim::Int=0, activation=Flux.σ; max_seq_len::Int=512)
 
 A chain of `ScanMixer` layers.
 
@@ -13,21 +13,21 @@ Arguments:
 - `context_dim`: Dimension of the context vector (optional).
 - `activation`: Activation function used in the internal blocks.
 
-Returns a `Flux.Chain` of `ScanMixer` layers.
+Returns a `Flux.Chain` of `ScanMixer` layers with precomputed positional encodings up to `max_seq_len`.
 """
 struct SequenceTransformation{C}
     chain::C
 end
 
-function SequenceTransformation(in_dim::Int, hidden_dim::Int, out_dim::Int, depth::Int, context_dim::Int=0, activation=relu)
+function SequenceTransformation(in_dim::Int, hidden_dim::Int, out_dim::Int, depth::Int, context_dim::Int=0, activation=Flux.σ; max_seq_len::Int=512)
     layers = []
     
     # First layer: Projects from input dimension to hidden dimension
-    push!(layers, ScanMixer(in_dim + context_dim, hidden_dim, hidden_dim, activation))
+    push!(layers, ScanMixer(in_dim + context_dim, hidden_dim, hidden_dim, activation; max_seq_len=max_seq_len))
     
     # Middle layers: Stay in hidden dimension
     for _ in 2:depth-1
-        push!(layers, ScanMixer(hidden_dim + context_dim, hidden_dim, hidden_dim, activation))
+        push!(layers, ScanMixer(hidden_dim + context_dim, hidden_dim, hidden_dim, activation; max_seq_len=max_seq_len))
     end
     
     # Last layer: Projects from hidden dimension to output dimension
@@ -35,9 +35,9 @@ function SequenceTransformation(in_dim::Int, hidden_dim::Int, out_dim::Int, dept
     if depth == 1
         # Re-create the single layer to output out_dim
         empty!(layers)
-        push!(layers, ScanMixer(in_dim + context_dim, hidden_dim, out_dim, activation))
+        push!(layers, ScanMixer(in_dim + context_dim, hidden_dim, out_dim, activation; max_seq_len=max_seq_len))
     else
-        push!(layers, ScanMixer(hidden_dim + context_dim, hidden_dim, out_dim, activation))
+        push!(layers, ScanMixer(hidden_dim + context_dim, hidden_dim, out_dim, activation; max_seq_len=max_seq_len))
     end
     
     return SequenceTransformation(Chain(layers...))
@@ -45,19 +45,34 @@ end
 
 Flux.@layer SequenceTransformation
 
+function _param_eltype(obj, default)
+    for t in Flux.trainable(obj)
+        if t isa AbstractArray
+            return eltype(t)
+        else
+            inner = _param_eltype(t, nothing)
+            inner !== nothing && return inner
+        end
+    end
+    return default
+end
+
 function (m::SequenceTransformation)(x::AbstractArray, context::AbstractArray=Float32[])
-    x_curr = x
+    param_T = _param_eltype(m.chain, eltype(x))
+    x_curr = param_T.(x)
+    ctx = isempty(context) ? context : param_T.(context)
+
     for layer in m.chain
         # Concatenate context if provided
-        if !isempty(context)
+        if !isempty(ctx)
             if ndims(x_curr) == 3
                 # x: (F, T, B), context: (C, B)
-                c_reshaped = reshape(context, size(context, 1), 1, size(context, 2))
+                c_reshaped = reshape(ctx, size(ctx, 1), 1, size(ctx, 2))
                 c_repeated = repeat(c_reshaped, 1, size(x_curr, 2), 1)
                 x_in = cat(x_curr, c_repeated, dims=1)
             elseif ndims(x_curr) == 2
                 # x: (F, T), context: (C,)
-                c_reshaped = reshape(context, size(context, 1), 1)
+                c_reshaped = reshape(ctx, size(ctx, 1), 1)
                 c_repeated = repeat(c_reshaped, 1, size(x_curr, 2))
                 x_in = cat(x_curr, c_repeated, dims=1)
             else
@@ -69,5 +84,6 @@ function (m::SequenceTransformation)(x::AbstractArray, context::AbstractArray=Fl
         
         x_curr = layer(x_in)
     end
-    return x_curr
+
+    return  x_curr
 end

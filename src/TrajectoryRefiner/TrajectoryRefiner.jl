@@ -2,6 +2,7 @@ module TrajectoryRefiner
 
 using Flux
 using ..SequenceTransform: SequenceTransformation
+import ..build
 
 include("sample.jl")
 include("networks.jl")

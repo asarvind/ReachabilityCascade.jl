@@ -83,7 +83,7 @@ The network has `n_glu` GLU blocks followed by a final linear `Dense` layer
 - `out_dim`  : output feature size (`Int`)
 
 # Keywords
-- `n_glu=2`  : number of GLU blocks before the final Dense
+- `n_glu=1`  : number of GLU blocks before the final Dense
 - `act`      : gate activation for each GLU (default `Flux.σ`)
 - `bias=true`: include bias in dense layers
 - `zero_init=false`: if true, initialize the final Dense to zeros.
@@ -92,7 +92,7 @@ The network has `n_glu` GLU blocks followed by a final linear `Dense` layer
 `Chain` consisting of `[GLU, ..., GLU, Dense]`.
 """
 function glu_mlp(in_dim::Integer, hidden::Integer, out_dim::Integer;
-                 n_glu::Integer=2, act=Flux.σ, bias::Bool=true, zero_init::Bool=false)
+                 n_glu::Integer=1, act=Flux.σ, bias::Bool=true, zero_init::Bool=false)
     layers = Any[]
     d = in_dim
     for _ in 1:max(n_glu, 0)

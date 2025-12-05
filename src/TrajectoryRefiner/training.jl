@@ -26,8 +26,8 @@ initial state), `u_guess`, and optional `x_target` (imitation trajectory over po
 - `save_path`: optional checkpoint path; if provided, `construction_args` must supply model dims for reload.
 - `save_period`: seconds between checkpoints when `save_path` is set (default 60).
 - `load_path`: optional path to resume from (defaults to `save_path` when provided).
-- `construction_args`: named tuple with `state_dim`, `input_dim`, `hidden_dim`, `depth`,
-  and `activation` used for reconstruction during save/load.
+- `construction_args`: named tuple with `state_dim`, `input_dim`, `cost_dim`, `hidden_dim`, `depth`,
+  and `activation`/`max_seq_len` used for reconstruction during save/load.
 
 # Returns
 `(model, losses)` with the trained model and a vector of per-step losses.
@@ -87,15 +87,15 @@ end
 
 """
     save_refinement_model(path::AbstractString, model::RefinementModel;
-                          state_dim, input_dim, hidden_dim, depth, activation=relu)
+                          state_dim, input_dim, cost_dim, hidden_dim, depth, activation=relu)
 
 Save a refinement model checkpoint along with its construction arguments using `Flux.state`.
 """
 function save_refinement_model(path::AbstractString, model::RefinementModel;
-                               state_dim::Int, input_dim::Int, hidden_dim::Int, depth::Int,
+                               state_dim::Int, input_dim::Int, cost_dim::Int, hidden_dim::Int, depth::Int,
                                activation=relu, max_seq_len::Int=512)
     state = Flux.state(model)
-    args = (state_dim, input_dim, hidden_dim, depth)
+    args = (state_dim, input_dim, cost_dim, hidden_dim, depth)
     kwargs = (; activation=activation, max_seq_len=max_seq_len)
     JLD2.jldsave(path; state, args, kwargs)
     return path
@@ -112,10 +112,10 @@ function load_refinement_model(path::AbstractString; activation=nothing)
     args = data["args"]
     stored_kwargs = get(data, "kwargs", (;))
     state = data["state"]
-    state_dim, input_dim, hidden_dim, depth = args
+    state_dim, input_dim, cost_dim, hidden_dim, depth = args
     act = activation === nothing ? get(stored_kwargs, :activation, Flux.σ) : activation
     max_seq_len = get(stored_kwargs, :max_seq_len, 512)
-    model = RefinementModel(state_dim, input_dim, hidden_dim, depth; activation=act, max_seq_len=max_seq_len)
+    model = RefinementModel(state_dim, input_dim, cost_dim, hidden_dim, depth; activation=act, max_seq_len=max_seq_len)
     Flux.loadmodel!(model, state)
     return model
 end
@@ -124,7 +124,7 @@ end
     build(::Type{RefinementModel}, data_iter, args...;
           hidden_dim::Integer=64, depth::Integer=2, activation=relu, kwargs...)
 
-Construct and train a `RefinementModel`, inferring state/input dimensions from the first element of
+Construct and train a `RefinementModel`, inferring state/input/cost dimensions from the first element of
 `data_iter`. Network construction is controlled by `hidden_dim`, `depth`, and `activation`; all
 positional `args...`/`kwargs...` are forwarded to [`train!`](@ref) (e.g., refinement steps,
 transition/mismatch/cost functions, optimiser, checkpointing). Returns `(model, losses)`.
@@ -133,14 +133,24 @@ function build(::Type{RefinementModel}, data_iter, args...;
                hidden_dim::Integer=64, depth::Integer=2, activation=Flux.σ, max_seq_len::Int=512, kwargs...)
     first_sample = first(data_iter)
     first_sample isa ShootingBundle || throw(ArgumentError("data_iter must yield ShootingBundle objects"))
+    length(args) >= 4 || throw(ArgumentError("build(::Type{RefinementModel}, data_iter, refine_steps, backprop_steps, transition_fn, traj_cost_fn, ...) requires at least four positional training arguments"))
     state_dim = size(first_sample.x_guess, 1)
     input_dim = size(first_sample.u_guess, 1)
-    out_dim_val = state_dim + input_dim
+    transition_fn = args[3]
+    traj_cost_fn = args[4]
+    cost_raw = traj_cost_fn(first_sample.x_guess)
+    if cost_raw isa Number
+        cost_dim = 1
+    elseif ndims(cost_raw) == 3
+        cost_dim = size(cost_raw, 1)
+    else
+        cost_dim = size(cost_raw, 1)
+    end
     hidden_dim_val = Int(hidden_dim)
     depth_val = Int(depth)
 
-    model = RefinementModel(state_dim, input_dim, hidden_dim_val, depth_val; activation=activation, max_seq_len=max_seq_len)
-    construction_args = (state_dim=state_dim, input_dim=input_dim, hidden_dim=hidden_dim_val,
+    model = RefinementModel(state_dim, input_dim, cost_dim, hidden_dim_val, depth_val; activation=activation, max_seq_len=max_seq_len)
+    construction_args = (state_dim=state_dim, input_dim=input_dim, cost_dim=cost_dim, hidden_dim=hidden_dim_val,
                          depth=depth_val, activation=activation, max_seq_len=max_seq_len)
 
     model, losses = train!(model, data_iter, args...;

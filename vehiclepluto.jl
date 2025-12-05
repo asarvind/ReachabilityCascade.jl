@@ -171,56 +171,53 @@ function cost_fn(x_tensor::AbstractArray)
 		Float32.(vcat([50, 4.0, 0.0, 10.0], zeros(3), 50.0, 1.75, 5.0, 50.0, 6.0, -5.0)),
 		Float32.([100, 3.0, 1.0, 10.0, 1.0, 1.0, 0.2, 100.0, 0.1, 1.0, 100.0, 0.1, 1.0])
 	)	
-	bc = maximum(Flux.relu(abs.(x .- center(X)) .- radius_hyperrectangle(X)).*scale) 
+	bc = Flux.relu(abs.(x .- center(X)) .- radius_hyperrectangle(X)).*scale 
 
 	# forward collision cost 
-	fc = maximum( min.(Flux.relu(Float32.(5.0) .- abs.(x[1, :] - x[8, :])), Flux.relu(Float32.(2.0) .- abs.(x[2, :] - x[9, :]))) )
+	fc = min.(Flux.relu(Float32.(5.0) .- abs.(x[1:1, :] - x[8:8, :])), Flux.relu(Float32.(2.0) .- abs.(x[2:2, :] - x[9:9, :])))
 	
 	# oncoming collision cost 
-	oc = sum( min.(Flux.relu(Float32.(5.0) .- abs.(x[1, :] - x[10, :])), Flux.relu(Float32.(2.0) .- abs.(x[2, :] - x[11, :]))) )
+	oc = min.(Flux.relu(Float32.(5.0) .- abs.(x[1:1, :] - x[10:10, :])), Flux.relu(Float32.(2.0) .- abs.(x[2:2, :] - x[11:11, :])))
 
 	# terminal cost 
-	tc = Flux.relu(x[8, end] - x[1, end]) 
+	tc = hcat(zeros(1, size(x_tensor, 2)-1), Flux.relu(x[8, end] - x[1, end]))
 
-	return 0*sigmoid(bc + fc + oc + tc) 
+	return vcat(bc, fc, oc, tc)
 end
 
 # ╔═╡ c8e15445-b1c1-4f9f-968c-030a00544956
 function mismatch_fn(x::AbstractArray, y::AbstractArray)
 	scale = Float32.([1.0, 1.0, 10.0, 1.0, 10.0, 10.0, 10.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
 	diff = Float32.(x) .- Float32.(y)
-	return sum(abs.(diff) .* scale)
+	return sum(abs.(diff) .* scale)/size(x, 2)
 end
 
 # ╔═╡ eab311cb-4227-4968-8ecf-52e07780b513
 let 
 	ds = discrete_vehicles(0.25)
-	eps_state = ones(13)*0.1
-	eps_input = ones(2)*0.1
+	eps_state = ones(13)*1.0
+	eps_input = ones(2)*1.0
 	car_data = load("data/car/trajectories.jld2")["data"]
 	overidx = [d.state_trajectory[1, end] - d.state_trajectory[8, end] > 0 for d in car_data]
 	over_data = car_data[overidx]
 	iterator = VehicleTrajectoryIterator(over_data, eps_state, eps_input,
-	                                     ds.X, ds.U; max_epoch=1, max_iter=10000,
+	                                     ds.X, ds.U; max_epoch=8, max_iter=10000,
 										 start_min = 28)
 	transition_model = load_transition_network("data/car/vehiclenet.jld2")
 	transition_fn = (x,u) -> Float32.(transition_model(Float32.(x), Float32.(u)))
 
 	# testing error
 	test_iterator = VehicleTrajectoryIterator(over_data, eps_state, eps_input,
-	                                     ds.X, ds.U; max_epoch=1, max_iter=10000,
+	                                     ds.X, ds.U; max_epoch=1, max_iter=100,
 										 start_min = 28)
 	sb, _ = iterate(test_iterator)
-	@assert all(isfinite, sb.x_guess) && all(isfinite, sb.u_guess)
-	@assert sb.x_target === nothing || all(isfinite, sb.x_target)
 	x_res = rollout_guess(sb, transition_fn)
-	@assert all(isfinite, x_res)
 	loss_cost = cost_fn(sb.x_guess)
 	loss_mis = mismatch_fn(x_res, selectdim(sb.x_guess, 2, 2:size(sb.x_guess,2)))
-	@assert isfinite(loss_cost) && isfinite(loss_mis)
+
 
 	# Single-sample gradient sanity check before training
-	model = RefinementModel(size(sb.x_guess, 1), size(sb.u_guess, 1), 64, 2, activation=Flux.sigmoid)
+	model = RefinementModel(size(sb.x_guess, 1), size(sb.u_guess, 1), 16, 128, 2, activation=Flux.sigmoid)
 
 	scale = Float32.([1.0, 1.0, 10.0, 1.0, 10.0, 10.0, 10.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
 	
@@ -237,7 +234,7 @@ let
 	end
 	losses, findmax(losses)
 
-	build(RefinementModel, iterator, 8, 1, transition_fn, cost_fn, mismatch_fn; depth=2, imitation_weight=0.0, opt=Flux.OptimiserChain(Flux.ClipGrad(), Flux.ClipNorm(), Flux.Adam()))
+	build(RefinementModel, iterator, 5, 1, transition_fn, cost_fn, mismatch_fn; depth=2, imitation_weight=0.0, opt=Flux.OptimiserChain(Flux.ClipGrad(), Flux.ClipNorm(), Flux.Adam()))
 end
 
 # ╔═╡ Cell order:

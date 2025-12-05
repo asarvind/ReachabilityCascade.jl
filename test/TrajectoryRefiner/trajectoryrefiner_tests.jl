@@ -12,7 +12,8 @@ using ReachabilityCascade.SequenceTransform
         hidden_dim = 10
         depth = 2
         
-        net = RefinementModel(state_dim, input_dim, hidden_dim, depth)
+        cost_dim = state_dim
+        net = RefinementModel(state_dim, input_dim, cost_dim, hidden_dim, depth)
         
         batch_size = 3
         seq_len = 5
@@ -46,7 +47,8 @@ using ReachabilityCascade.SequenceTransform
         hidden_dim = 10
         depth = 2
         
-        net = RefinementModel(state_dim, input_dim, hidden_dim, depth)
+        cost_dim = state_dim
+        net = RefinementModel(state_dim, input_dim, cost_dim, hidden_dim, depth)
         
         # Mock transition network: linear dynamics x_next = x + u
         # Input: (x_prev_seq, u_seq) -> x_res_seq
@@ -115,7 +117,8 @@ using ReachabilityCascade.SequenceTransform
         out_dim = state_dim + input_dim
         depth = 2
         
-        net = RefinementModel(state_dim, input_dim, hidden_dim, depth)
+        cost_dim = state_dim
+        net = RefinementModel(state_dim, input_dim, cost_dim, hidden_dim, depth)
         
         struct MockTransitionRec
         end
@@ -149,7 +152,8 @@ using ReachabilityCascade.SequenceTransform
             out_dim::Int
         end
         (z::ZeroBlock)(x, ctx) = zeros(Float32, z.out_dim, size(x, 2), size(x, 3))
-        net = RefinementModel(ZeroBlock(2))
+        cost_dim = 1
+        net = RefinementModel(ZeroBlock(2), cost_dim)
         
         state_dim = 1
         input_dim = 1
@@ -188,7 +192,8 @@ using ReachabilityCascade.SequenceTransform
         hidden_dim = 6
         depth = 1
         
-        net = RefinementModel(state_dim, input_dim, hidden_dim, depth)
+        cost_dim = state_dim
+        net = RefinementModel(state_dim, input_dim, cost_dim, hidden_dim, depth)
 
         transition_fn(x_prev, u) = x_prev .+ vcat(u, u)
         traj_cost_fn(x_res) = zeros(eltype(x_res), size(x_res))

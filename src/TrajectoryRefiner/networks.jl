@@ -8,9 +8,11 @@ A network that computes corrections for trajectory refinement using a single seq
 
 # Fields
 - `core_net`: Network applied to residual and guess branches.
+- `cost_dim`: Number of rows expected from `traj_cost_fn` outputs.
 """
-struct RefinementModel{C}
+struct RefinementModel{C,I}
     core_net::C
+    cost_dim::I
 end
 
 """
@@ -37,10 +39,10 @@ function rollout_guess(sample::ShootingBundle, transition_fn)
 end
 
 """
-    RefinementModel(state_dim::Int, input_dim::Int, hidden_dim::Int, depth::Int; activation=Flux.σ)
+    RefinementModel(state_dim::Int, input_dim::Int, cost_dim::Int, hidden_dim::Int, depth::Int; activation=Flux.σ)
 
 Construct a `RefinementModel` whose outputs correct both state and input, with output dimension
-fixed to `state_dim + input_dim`. Trajectory cost features (assumed `state_dim` rows, post-initial
+fixed to `state_dim + input_dim`. Trajectory cost features (with `cost_dim` rows, post-initial
 columns) are appended to the residual branch; zeros are appended to the guess branch.
 
 # Arguments
@@ -50,15 +52,18 @@ columns) are appended to the residual branch; zeros are appended to the guess br
 - `depth`: Depth of the `SequenceTransformation` chains.
 - `activation`: Activation function.
 """
-function RefinementModel(state_dim::Int, input_dim::Int, hidden_dim::Int, depth::Int; activation=Flux.σ, max_seq_len::Int=512)
-    # Inputs to the networks are concatenated: x_res, x_guess, u_guess, cost_body
-    net_in_dim = 3 * state_dim + input_dim
+function RefinementModel(state_dim::Int, input_dim::Int, cost_dim::Int, hidden_dim::Int, depth::Int; activation=Flux.σ, max_seq_len::Int=512)
+    cost_dim > 0 || throw(ArgumentError("cost_dim must be positive"))
+    # Inputs to the network are concatenated: x_res, x_guess, u_guess, cost_body
+    net_in_dim = 2 * state_dim + input_dim + cost_dim
     out_dim = state_dim + input_dim
 
     core_net = SequenceTransformation(net_in_dim, hidden_dim, out_dim, depth, state_dim, activation; max_seq_len=max_seq_len)
 
-    return RefinementModel(core_net)
+    return RefinementModel(core_net, cost_dim)
 end
+
+RefinementModel(core_net::C, cost_dim::Int) where {C} = RefinementModel{C,Int}(core_net, cost_dim)
 
 Flux.@layer RefinementModel
 
@@ -140,7 +145,18 @@ the input bundle).
     x0 = selectdim(x_guess_full, 2, 1)
     x_guess = selectdim(x_guess_full, 2, 2:size(x_guess_full, 2))
     cost_raw = traj_cost_fn(x_guess_full)
-    cost_body = ndims(cost_raw) == 3 && size(cost_raw, 2) == size(x_guess_full, 2) ? selectdim(cost_raw, 2, 2:size(cost_raw, 2)) : cost_raw
+    if cost_raw isa Number
+        cost_body = fill(param_T(cost_raw), m.cost_dim, size(x_guess, 2), size(x_guess, 3))
+    elseif ndims(cost_raw) == 3 && size(cost_raw, 2) == size(x_guess_full, 2)
+        cost_body = selectdim(cost_raw, 2, 2:size(cost_raw, 2))
+    elseif ndims(cost_raw) == 3
+        cost_body = cost_raw
+    elseif ndims(cost_raw) == 2
+        cost_body = reshape(cost_raw, size(cost_raw, 1), size(cost_raw, 2), 1)
+    else
+        throw(ArgumentError("traj_cost_fn must return a scalar or array with dimensions (cost_dim, seq_len[, batch])"))
+    end
+    size(cost_body, 1) == m.cost_dim || throw(ArgumentError("traj_cost_fn must return cost_dim=$(m.cost_dim) rows"))
     size(cost_body, 2) == size(x_guess, 2) || throw(ArgumentError("traj_cost_fn must return an array with the same number of columns as the trajectory body"))
 
     # Concatenate inputs along feature dimension

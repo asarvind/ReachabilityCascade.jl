@@ -22,8 +22,7 @@ using ReachabilityCascade.SequenceTransform
         x0 = rand(Float32, state_dim, batch_size)
         x_body = rand(Float32, state_dim, seq_len, batch_size)
         u_guess = rand(Float32, input_dim, seq_len, batch_size)
-        x_full = cat(reshape(x0, state_dim, 1, batch_size), x_body; dims=2)
-        bundle = ShootingBundle(x_full, u_guess)
+        bundle = ShootingBundle(reshape(x0, state_dim, 1, batch_size), x_body, u_guess)
 
         # Transition returns the provided guess body so x_res == x_body.
         struct IdentityTransition end
@@ -35,7 +34,8 @@ using ReachabilityCascade.SequenceTransform
 
         refined = net(bundle, transition, traj_cost_fn)
 
-        @test size(refined.x_guess) == (state_dim, seq_len + 1, batch_size)
+        @test size(refined.x0) == (state_dim, 1, batch_size)
+        @test size(refined.x_guess) == (state_dim, seq_len, batch_size)
         @test size(refined.u_guess) == (input_dim, seq_len, batch_size)
         @test all(isfinite, refined.x_guess)
         @test all(isfinite, refined.u_guess)
@@ -71,12 +71,11 @@ using ReachabilityCascade.SequenceTransform
         x0 = rand(Float32, state_dim, batch_size)
         x_guess_body = rand(Float32, state_dim, seq_len, batch_size)
         u_guess = rand(Float32, input_dim, seq_len, batch_size)
-        x_full = cat(reshape(x0, state_dim, 1, batch_size), x_guess_body; dims=2)
-        bundle = ShootingBundle(x_full, u_guess)
+        bundle = ShootingBundle(reshape(x0, state_dim, 1, batch_size), x_guess_body, u_guess)
         
         refined = net(bundle, transition, traj_cost_fn)
         
-        @test size(refined.x_guess) == (state_dim, seq_len + 1, batch_size)
+        @test size(refined.x_guess) == (state_dim, seq_len, batch_size)
         @test size(refined.u_guess) == (input_dim, seq_len, batch_size)
         
         # Test that if dynamics are satisfied and constraint is satisfied, correction is near zero
@@ -101,10 +100,10 @@ using ReachabilityCascade.SequenceTransform
         # Actually, delta_inter should be exactly zero because x_res will equal x_guess.
         # delta_term should be zero because violation is zero.
         
-        valid_bundle = ShootingBundle(cat(reshape(x_0_valid, state_dim, 1, batch_size), x_valid; dims=2), u_valid)
+        valid_bundle = ShootingBundle(reshape(x_0_valid, state_dim, 1, batch_size), x_valid, u_valid)
         refined_valid = net(valid_bundle, transition, traj_cost_fn)
-        
-        @test selectdim(refined_valid.x_guess, 2, 2:size(refined_valid.x_guess, 2)) ≈ x_valid
+
+        @test refined_valid.x_guess ≈ x_valid
         @test refined_valid.u_guess ≈ u_valid atol=1e-5
         
     end
@@ -132,16 +131,15 @@ using ReachabilityCascade.SequenceTransform
         x_guess_body = rand(Float32, state_dim, seq_len, batch_size)
         u_guess = rand(Float32, input_dim, seq_len, batch_size)
         x0 = rand(Float32, state_dim, batch_size)
-        x_full = cat(reshape(x0, state_dim, 1, batch_size), x_guess_body; dims=2)
-        bundle = ShootingBundle(x_full, u_guess)
+        bundle = ShootingBundle(reshape(x0, state_dim, 1, batch_size), x_guess_body, u_guess)
         
         # Manual two-step refinement
         b1 = net(bundle, transition, traj_cost_fn)
         b2 = net(b1, transition, traj_cost_fn)
-        
+
         # Recursive call should match manual chaining
         b_rec = net(bundle, transition, traj_cost_fn, 2)
-        
+
         @test b_rec.x_guess ≈ b2.x_guess
         @test b_rec.u_guess ≈ b2.u_guess
     end
@@ -172,7 +170,7 @@ using ReachabilityCascade.SequenceTransform
         x_guess_init = fill(1f0, state_dim, seq_len, batch)
         u_guess_init = fill(2f0, input_dim, seq_len, batch)
         x_0 = fill(0f0, state_dim, batch)
-        bundle = ShootingBundle(cat(reshape(x_0, state_dim, 1, batch), x_guess_init; dims=2), u_guess_init)
+        bundle = ShootingBundle(reshape(x_0, state_dim, 1, batch), x_guess_init, u_guess_init)
         
         # Expected residual with zero-network (no correction): x_prev = [0, 1], u = [2, 2] => x_res = [2, 3]
         # Mismatch = (2-1)^2 + (3-1)^2 = 1 + 4 = 5
@@ -206,15 +204,14 @@ using ReachabilityCascade.SequenceTransform
         x_traj[1, :, :] .= range(-0.3f0, stop=0.3f0, length=seq_len + 1)
         x_traj[2, :, :] .= 0.1f0
         u_traj = fill(0.05f0, input_dim, seq_len, 1)
-        sample1 = ShootingBundle(x_traj, u_traj)
+        sample1 = ShootingBundle(selectdim(x_traj, 2, 1:1), selectdim(x_traj, 2, 2:size(x_traj,2)), u_traj)
 
         # Sample with batch expansion for u_guess and target.
         x_guess2 = fill(0.2f0, state_dim, seq_len, 2)
         u_guess2 = fill(0.1f0, input_dim, seq_len, 1)
         x0_2 = fill(0.0f0, state_dim, 2)
-        x_full2 = cat(reshape(x0_2, state_dim, 1, 2), x_guess2; dims=2)
         target2 = fill(0.25f0, state_dim, seq_len, 2)
-        sample2 = ShootingBundle(x_full2, u_guess2; x_target=target2)
+        sample2 = ShootingBundle(reshape(x0_2, state_dim, 1, 2), x_guess2, u_guess2; x_target=target2)
 
         data = [sample1, sample2]
 

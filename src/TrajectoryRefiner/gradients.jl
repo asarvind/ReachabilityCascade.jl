@@ -20,8 +20,8 @@ function refinement_loss(network::RefinementModel, transition_fn, traj_cost_fn, 
     # Apply refinement, then evaluate the residual and terminal cost on the final guess.
     refined = network(sample, transition_fn, traj_cost_fn, steps)
     x_res = rollout_guess(refined, transition_fn)
-    x_body = selectdim(refined.x_guess, 2, 2:size(refined.x_guess, 2))
-    traj_cost_raw = traj_cost_fn(refined.x_guess)
+    x_body = refined.x_guess
+    traj_cost_raw = traj_cost_fn(cat(refined.x0, refined.x_guess; dims=2))
     traj_cost = traj_cost_raw isa Number ? traj_cost_raw : mean(traj_cost_raw)
     mismatch = mismatch_fn(x_res, x_body)
     objective_loss = mismatch + traj_cost

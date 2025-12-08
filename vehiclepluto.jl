@@ -135,29 +135,15 @@ function Base.iterate(iter::VehicleTrajectoryIterator, state::Tuple{Int,Int}=(it
     body_len = size(x_segment, 2) - 1
     u_segment = u_full[:, start_idx:(start_idx + body_len - 1)]
 
-    # Sample from state/input sets and blend with data using epsilon weights
-    x_rand = reduce(hcat, [Float32.(LazySets.sample(iter.state_set)) for _ in 1:(body_len + 1)])
-    u_rand = reduce(hcat, [Float32.(LazySets.sample(iter.input_set)) for _ in 1:body_len])
-    # Clamp random samples to the set bounds to avoid runaway values
-    x_center, x_radius = center(iter.state_set), radius(iter.state_set)
-    u_center, u_radius = center(iter.input_set), radius(iter.input_set)
-    x_rand = clamp.(x_rand, x_center .- x_radius, x_center .+ x_radius)
-    u_rand = clamp.(u_rand, u_center .- u_radius, u_center .+ u_radius)
-
-    eps_state_mat = reshape(iter.epsilon_state, :, 1)
-    eps_input_mat = reshape(iter.epsilon_input, :, 1)
-
-    x_body_guess = eps_state_mat .* x_rand[:, 2:end] .+ (1 .- eps_state_mat) .* x_segment[:, 2:end]
-    x_guess = hcat(x_segment[:, 1:1], x_body_guess)
-    u_guess = eps_input_mat .* u_rand .+ (1 .- eps_input_mat) .* u_segment
-
-    x_guess = Float32.(x_guess)
-    u_guess = Float32.(u_guess)
+    # Simple guess: repeat the initial state and zero inputs
+    x0 = x_segment[:, 1:1]
+    x_guess = repeat(x0, 1, body_len)
+    u_guess = zeros(Float32, size(u_segment))
     x_target = Float32.(x_segment[:, 2:end])
 
     next_state = (idx + 1, epoch)
     iter.iter, iter.epoch = next_state
-    bundle = ReachabilityCascade.TrajectoryRefiner.ShootingBundle(x_guess, u_guess; x_target=x_target)
+    bundle = ReachabilityCascade.TrajectoryRefiner.ShootingBundle(reshape(x0, size(x0,1), 1, 1), x_guess, u_guess; x_target=x_target)
     return bundle, next_state
 end
 
@@ -212,18 +198,19 @@ let
 										 start_min = 28)
 	sb, _ = iterate(test_iterator)
 	x_res = rollout_guess(sb, transition_fn)
-	loss_cost = cost_fn(sb.x_guess)
-	loss_mis = mismatch_fn(x_res, selectdim(sb.x_guess, 2, 2:size(sb.x_guess,2)))
+	loss_cost = cost_fn(cat(sb.x0, sb.x_guess; dims=2))
+	loss_mis = mismatch_fn(x_res, sb.x_guess)
 
 
 	# Single-sample gradient sanity check before training
-	model = RefinementModel(size(sb.x_guess, 1), size(sb.u_guess, 1), 16, 128, 2, activation=Flux.sigmoid)
+	cost_dim = size(cost_fn(cat(sb.x0, sb.x_guess; dims=2)), 1)
+	model = RefinementModel(size(sb.x_guess, 1), size(sb.u_guess, 1), cost_dim, 128, 2; activation=Flux.sigmoid)
 
 	scale = Float32.([1.0, 1.0, 10.0, 1.0, 10.0, 10.0, 10.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
 	
 	refined = model(sb, transition_model, cost_fn, 1)
 	x_res = rollout_guess(refined, transition_fn)
-	x_body = selectdim(refined.x_guess, 2, 2:size(refined.x_guess, 2))
+	x_body = refined.x_guess
 	mismatch_fn(x_body, x_res)
 	x_body - x_res
 

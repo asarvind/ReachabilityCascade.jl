@@ -12,8 +12,8 @@ using ..TrajectoryRefiner: RefinementModel, ShootingBundle, refinement_loss, ref
            imitation_weight=1.0)
 
 Train a trajectory refiner (`RefinementModel`) using unrolled refinement steps and truncated
-backpropagation. `data_iter` must yield `ShootingBundle` objects carrying `x_guess` (including the
-initial state), `u_guess`, and optional `x_target` (imitation trajectory over post-initial states).
+backpropagation. `data_iter` must yield `ShootingBundle` objects carrying `x0` (initial state),
+`x_guess` (body), `u_guess`, and optional `x_target` (imitation trajectory over post-initial states).
 
 # Arguments
 - `model`: refinement model to train.
@@ -93,9 +93,9 @@ Save a refinement model checkpoint along with its construction arguments using `
 """
 function save_refinement_model(path::AbstractString, model::RefinementModel;
                                state_dim::Int, input_dim::Int, cost_dim::Int, hidden_dim::Int, depth::Int,
-                               activation=relu, max_seq_len::Int=512)
+                               activation=relu, max_seq_len::Int=512, latent_dim::Int=state_dim)
     state = Flux.state(model)
-    args = (state_dim, input_dim, cost_dim, hidden_dim, depth)
+    args = (state_dim, input_dim, cost_dim, hidden_dim, depth, latent_dim)
     kwargs = (; activation=activation, max_seq_len=max_seq_len)
     JLD2.jldsave(path; state, args, kwargs)
     return path
@@ -112,10 +112,10 @@ function load_refinement_model(path::AbstractString; activation=nothing)
     args = data["args"]
     stored_kwargs = get(data, "kwargs", (;))
     state = data["state"]
-    state_dim, input_dim, cost_dim, hidden_dim, depth = args
+    state_dim, input_dim, cost_dim, hidden_dim, depth, latent_dim = args
     act = activation === nothing ? get(stored_kwargs, :activation, Flux.σ) : activation
     max_seq_len = get(stored_kwargs, :max_seq_len, 512)
-    model = RefinementModel(state_dim, input_dim, cost_dim, hidden_dim, depth; activation=act, max_seq_len=max_seq_len)
+    model = RefinementModel(state_dim, input_dim, cost_dim, hidden_dim, depth; activation=act, max_seq_len=max_seq_len, latent_dim=latent_dim)
     Flux.loadmodel!(model, state)
     return model
 end
@@ -130,7 +130,7 @@ positional `args...`/`kwargs...` are forwarded to [`train!`](@ref) (e.g., refine
 transition/mismatch/cost functions, optimiser, checkpointing). Returns `(model, losses)`.
 """
 function build(::Type{RefinementModel}, data_iter, args...;
-               hidden_dim::Integer=64, depth::Integer=2, activation=Flux.σ, max_seq_len::Int=512, kwargs...)
+               hidden_dim::Integer=64, depth::Integer=2, activation=Flux.σ, max_seq_len::Int=512, latent_dim::Integer=nothing, kwargs...)
     first_sample = first(data_iter)
     first_sample isa ShootingBundle || throw(ArgumentError("data_iter must yield ShootingBundle objects"))
     length(args) >= 4 || throw(ArgumentError("build(::Type{RefinementModel}, data_iter, refine_steps, backprop_steps, transition_fn, traj_cost_fn, ...) requires at least four positional training arguments"))
@@ -138,7 +138,7 @@ function build(::Type{RefinementModel}, data_iter, args...;
     input_dim = size(first_sample.u_guess, 1)
     transition_fn = args[3]
     traj_cost_fn = args[4]
-    cost_raw = traj_cost_fn(first_sample.x_guess)
+    cost_raw = traj_cost_fn(cat(first_sample.x0, first_sample.x_guess; dims=2))
     if cost_raw isa Number
         cost_dim = 1
     elseif ndims(cost_raw) == 3
@@ -148,10 +148,11 @@ function build(::Type{RefinementModel}, data_iter, args...;
     end
     hidden_dim_val = Int(hidden_dim)
     depth_val = Int(depth)
+    latent_dim_val = latent_dim === nothing ? state_dim : Int(latent_dim)
 
-    model = RefinementModel(state_dim, input_dim, cost_dim, hidden_dim_val, depth_val; activation=activation, max_seq_len=max_seq_len)
+    model = RefinementModel(state_dim, input_dim, cost_dim, hidden_dim_val, depth_val; activation=activation, max_seq_len=max_seq_len, latent_dim=latent_dim_val)
     construction_args = (state_dim=state_dim, input_dim=input_dim, cost_dim=cost_dim, hidden_dim=hidden_dim_val,
-                         depth=depth_val, activation=activation, max_seq_len=max_seq_len)
+                         depth=depth_val, activation=activation, max_seq_len=max_seq_len, latent_dim=latent_dim_val)
 
     model, losses = train!(model, data_iter, args...;
                            construction_args=construction_args, kwargs...)

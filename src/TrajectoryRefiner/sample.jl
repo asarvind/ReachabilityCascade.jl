@@ -1,7 +1,8 @@
 mutable struct ShootingBundle
-    x_guess::AbstractArray          # (state_dim, seq_len+1, batch) includes initial state
+    x0::AbstractArray               # (state_dim, batch)
+    x_guess::AbstractArray          # (state_dim, seq_len, batch) excludes initial state
     u_guess::AbstractArray          # (input_dim, seq_len, batch)
-    x_target::Union{Nothing,AbstractArray} # optional imitation target (state_dim, seq_len, batch) over post-initial states
+    x_target::Union{Nothing,AbstractArray} # optional imitation target (state_dim, seq_len, batch)
 end
 
 # -- Shape helpers -------------------------------------------------------------
@@ -81,19 +82,25 @@ end
 
 # -- Constructors --------------------------------------------------------------
 
-function ShootingBundle(x_guess::AbstractArray, u_guess::AbstractArray; x_target=nothing)
+function ShootingBundle(x0::AbstractArray, x_guess::AbstractArray, u_guess::AbstractArray; x_target=nothing)
+    x0 = _as_state_seq(x0, "x0")
+    size(x0, 2) == 1 || throw(ArgumentError("x0 must have a single time dimension"))
+
     x_guess = _as_state_seq(x_guess, "x_guess")
     u_guess = _as_input_seq(u_guess, "u_guess")
 
     state_dim, seq_len_x, batch = size(x_guess)
+    batch0 = size(x0, 3)
+    batch0 == batch || (batch0 == 1 && batch > 1) || throw(ArgumentError("x0 batch size $batch0 must match x_guess batch $batch"))
+    x0 = batch0 == batch ? x0 : repeat(x0, 1, 1, batch)
     u_guess = _match_batch3(u_guess, batch, "u_guess")
     seq_len_u = size(u_guess, 2)
 
-    seq_len_x >= 2 || throw(ArgumentError("x_guess must include initial state and at least one step"))
-    seq_len_x == seq_len_u + 1 || throw(ArgumentError("x_guess length $seq_len_x must equal u_guess length $seq_len_u + 1 (initial state + trajectory)"))
+    seq_len_x >= 1 || throw(ArgumentError("x_guess must include at least one step"))
+    seq_len_x == seq_len_u || throw(ArgumentError("x_guess length $seq_len_x must equal u_guess length $seq_len_u"))
 
-    seq_len_body = seq_len_x - 1
+    seq_len_body = seq_len_x
     target = _coerce_target(x_target, state_dim, seq_len_body, batch)
 
-    return ShootingBundle(x_guess, u_guess, target)
+    return ShootingBundle(x0, x_guess, u_guess, target)
 end

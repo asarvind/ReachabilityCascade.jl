@@ -151,7 +151,8 @@ using ReachabilityCascade.SequenceTransform
         end
         (z::ZeroBlock)(x, ctx) = zeros(Float32, z.out_dim, size(x, 2), size(x, 3))
         cost_dim = 1
-        net = RefinementModel(ZeroBlock(2), cost_dim)
+        # state_dim=1, input_dim=1, latent_dim defaults to 1 -> total out_dim = 3
+        net = RefinementModel(ZeroBlock(3), cost_dim)
         
         state_dim = 1
         input_dim = 1
@@ -218,15 +219,57 @@ using ReachabilityCascade.SequenceTransform
         # Flatten parameters to a single vector (avoids deprecated Flux.params).
         flat_before, _ = Flux.destructure(net)
 
-        _, losses = train!(net, data, 2, 1,
+        _, metrics = train!(net, data, 2, 1,
                            transition_fn, traj_cost_fn, traj_mismatch_fn;
                            opt=Flux.Adam(5e-3),
                            imitation_weight=0.3)
 
-        @test length(losses) == 2
-        @test all(isfinite.(losses))
+        @test length(metrics) == 2
+        @test all(isfinite.([m.loss for m in metrics]))
+        @test all(isfinite.([m.traj_cost for m in metrics]))
+        @test all(isfinite.([m.mismatch for m in metrics]))
+        @test all(isfinite.([m.imitation for m in metrics]))
 
         flat_after, _ = Flux.destructure(net)
         @test !isapprox(flat_before, flat_after; atol=1e-8)
+    end
+
+    @testset "build updates parameters (multi-step)" begin
+        Random.seed!(99)
+        state_dim = 2
+        input_dim = 1
+        cost_dim = state_dim
+        hidden_dim = 5
+        depth = 1
+
+        seq_len = 2
+        batch = 1
+        x0 = rand(Float32, state_dim, batch)
+        x_guess = rand(Float32, state_dim, seq_len, batch)
+        u_guess = rand(Float32, input_dim, seq_len, batch)
+        sample = ShootingBundle(reshape(x0, state_dim, 1, batch), x_guess, u_guess)
+        data = [sample, sample]
+
+        transition_fn(x_prev, u) = x_prev .+ u
+        traj_cost_fn(x) = zeros(eltype(x), size(x))
+        traj_mismatch_fn(x_res, x_guess) = sum(abs2.(x_res .- x_guess))
+
+        # Capture initial parameters with a deterministic seed
+        Random.seed!(1234)
+        model_init = RefinementModel(state_dim, input_dim, cost_dim, hidden_dim, depth)
+        flat_before, _ = Flux.destructure(model_init)
+
+        # Build (which trains) with the same initial seed to align initial weights
+        Random.seed!(1234)
+        build_out = build(RefinementModel, data, 2, 1,
+                          transition_fn, traj_cost_fn, traj_mismatch_fn;
+                          hidden_dim=hidden_dim, depth=depth,
+                          imitation_weight=0.0)
+        @test length(build_out.metrics) == length(data)
+        flat_after, _ = Flux.destructure(build_out.model)
+        @test !isapprox(flat_before, flat_after; atol=1e-8)
+        # Ensure init_model matches the pre-training parameters
+        flat_init, _ = Flux.destructure(build_out.init_model)
+        @test isapprox(flat_before, flat_init; atol=1e-8)
     end
 end

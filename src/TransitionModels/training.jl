@@ -4,7 +4,6 @@ using Flux.Losses: mse
 using Random
 using JLD2
 using Statistics
-import ..build
 
 """
     train!(model::TransitionNetwork, dataset;

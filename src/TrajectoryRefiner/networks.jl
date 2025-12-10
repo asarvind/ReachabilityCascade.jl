@@ -64,7 +64,7 @@ function RefinementModel(state_dim::Int, input_dim::Int, cost_dim::Int, hidden_d
     latent_dim > 0 || throw(ArgumentError("latent_dim must be positive"))
     # Inputs to the network are concatenated: x_res, x_guess, u_guess, cost_body
     net_in_dim = 2 * state_dim + input_dim + cost_dim + latent_dim
-    out_dim = state_dim + input_dim
+    out_dim = state_dim + input_dim + latent_dim
 
     core_net = SequenceTransformation(net_in_dim, hidden_dim, out_dim, depth, state_dim, activation; max_seq_len=max_seq_len)
 
@@ -149,14 +149,15 @@ the input bundle).
     x_guess = param_T.(sample.x_guess)
     u_guess = param_T.(sample.u_guess)
     x_target = sample.x_target === nothing ? nothing : param_T.(sample.x_target)
-    cast_bundle = ShootingBundle(x0, x_guess, u_guess; x_target=x_target)
+    latent_init = latent_state !== nothing ? latent_state : sample.latent
+    cast_bundle = ShootingBundle(x0, x_guess, u_guess; x_target=x_target, latent=latent_init)
     x0_ctx = reshape(x0, size(x0, 1), size(x0, 3))
 
     # latent sequence
-    if latent_state === nothing
+    if cast_bundle.latent === nothing
         latent_seq = zeros(param_T, m.latent_dim, size(x_guess, 2), size(x_guess, 3))
     else
-        ls = latent_state
+        ls = cast_bundle.latent
         nd = ndims(ls)
         if nd == 2
             ls = reshape(ls, size(ls,1), 1, size(ls,2))
@@ -197,12 +198,15 @@ the input bundle).
     out_guess = m.core_net(net_input_guess, x0_ctx)
     correction = out_res - out_guess
     state_dim = size(x_guess, 1)
+    input_dim = size(u_guess, 1)
     delta_x = correction[1:state_dim, :, :]
-    delta_u = correction[state_dim+1:end, :, :]
+    delta_u = correction[state_dim+1:state_dim+input_dim, :, :]
+    delta_latent = correction[state_dim+input_dim+1:end, :, :]
     x_new = x_guess + delta_x
     u_new = u_guess + delta_u
+    latent_new = delta_latent
 
-    return ShootingBundle(x0, x_new, u_new; x_target=cast_bundle.x_target)
+    return ShootingBundle(x0, x_new, u_new; x_target=cast_bundle.x_target, latent=latent_new)
 end
 
 function (m::RefinementModel)(sample::ShootingBundle, transition_fn, traj_cost_fn, steps::Integer; latent_state=nothing)

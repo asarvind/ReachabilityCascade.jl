@@ -2,14 +2,14 @@ module TrajectoryRefinerTraining
 
 using Flux
 using JLD2
-import ..build
 using ..TrajectoryRefiner: RefinementModel, ShootingBundle, refinement_loss, refinement_grads
 
 """
     train!(model, data_iter, refine_steps::Int, backprop_steps::Int,
            transition_fn, traj_cost_fn, traj_mismatch_fn;
            opt=Flux.OptimiserChain(Flux.ClipNorm(), Flux.Adam()),
-           imitation_weight=1.0)
+           imitation_weight=1.0,
+           backprop_mode::Symbol=:tail)
 
 Train a trajectory refiner (`RefinementModel`) using unrolled refinement steps and truncated
 backpropagation. `data_iter` must yield `ShootingBundle` objects carrying `x0` (initial state),
@@ -23,6 +23,10 @@ backpropagation. `data_iter` must yield `ShootingBundle` objects carrying `x0` (
 - `transition_fn`, `traj_cost_fn`, `traj_mismatch_fn`: callbacks forwarded to `refinement_loss`.
 - `opt`: Flux optimiser (default `Flux.OptimiserChain(Flux.ClipNorm(), Flux.Adam())`).
 - `imitation_weight`: weight on the imitation factor when a `target` trajectory is provided.
+- `backprop_mode`: `:tail` (default) uses the last `backprop_steps` refinements; `:min_loss`
+  picks the refinement step with minimal loss and backpropagates for `backprop_steps` steps from there.
+- `softmax_temperature`: temperature used when scalarizing array-valued `traj_cost_fn`/`mismatch_fn`
+  outputs via softmax-weighted averaging (default 1.0).
 - `save_path`: optional checkpoint path; if provided, `construction_args` must supply model dims for reload.
 - `save_period`: seconds between checkpoints when `save_path` is set (default 60).
 - `load_path`: optional path to resume from (defaults to `save_path` when provided).
@@ -30,14 +34,17 @@ backpropagation. `data_iter` must yield `ShootingBundle` objects carrying `x0` (
   and `activation`/`max_seq_len` used for reconstruction during save/load.
 
 # Returns
-`(model, losses)` with the trained model and a vector of per-step losses.
+`(model, metrics)` with the trained model and a vector of per-step loss components
+(`loss`, `traj_cost`, `mismatch`, `imitation`).
 """
 function train!(model::RefinementModel, data_iter, refine_steps::Int, backprop_steps::Int,
                 transition_fn, traj_cost_fn, traj_mismatch_fn;
                 opt=Flux.OptimiserChain(Flux.ClipNorm(), Flux.Adam()),
                 imitation_weight::Real=1.0,
                 save_path=nothing, save_period::Real=60.0,
-                load_path=nothing, construction_args::Union{Nothing,NamedTuple}=nothing)
+                load_path=nothing, construction_args::Union{Nothing,NamedTuple}=nothing,
+                backprop_mode::Symbol=:tail,
+                softmax_temperature::Real=1.0)
     backprop_steps <= refine_steps || throw(ArgumentError("backprop_steps must be ≤ refine_steps"))
 
     # Optionally resume from checkpoint
@@ -50,25 +57,25 @@ function train!(model::RefinementModel, data_iter, refine_steps::Int, backprop_s
     end
 
     opt_state = Flux.setup(opt, model)
-    losses = Float32[]
+    metrics_log = NamedTuple{(:loss, :traj_cost, :mismatch, :imitation, :best_step), NTuple{5, Float32}}[]
     last_save = time()
 
     for sample in data_iter
         sample isa ShootingBundle || throw(ArgumentError("data_iter must yield ShootingBundle objects"))
         tbatch = sample
 
-        total_steps = max(refine_steps, 0)
-        bsteps = clamp(backprop_steps, 0, total_steps)
-        fsteps = total_steps - bsteps
-
-        fwd_sample = fsteps > 0 ? model(tbatch, transition_fn, traj_cost_fn, fsteps) : tbatch
-
         grads, metrics = refinement_grads(model, transition_fn, traj_cost_fn, traj_mismatch_fn,
-                                          fwd_sample, bsteps;
-                                          imitation_weight=imitation_weight)
-
+                                          tbatch, refine_steps, backprop_steps;
+                                          imitation_weight=imitation_weight,
+                                          backprop_mode=backprop_mode,
+                                          softmax_temperature=softmax_temperature)
         Flux.update!(opt_state, model, grads)
-        push!(losses, Float32(metrics.loss))
+
+        push!(metrics_log, (Float32(metrics.loss),
+                            Float32(metrics.traj_cost),
+                            Float32(metrics.mismatch),
+                            Float32(metrics.imitation),
+                            Float32(get(metrics, :best_step, 0))))
 
         if save_path !== nothing && (time() - last_save) >= save_period
             construction_args === nothing && throw(ArgumentError("construction_args must be provided to save checkpoints"))
@@ -82,7 +89,7 @@ function train!(model::RefinementModel, data_iter, refine_steps::Int, backprop_s
         save_refinement_model(save_path, model; construction_args...)
     end
 
-    return model, losses
+    return model, metrics_log
 end
 
 """
@@ -93,7 +100,7 @@ Save a refinement model checkpoint along with its construction arguments using `
 """
 function save_refinement_model(path::AbstractString, model::RefinementModel;
                                state_dim::Int, input_dim::Int, cost_dim::Int, hidden_dim::Int, depth::Int,
-                               activation=relu, max_seq_len::Int=512, latent_dim::Int=state_dim)
+                               activation=relu, max_seq_len::Int=512, latent_dim::Union{Nothing,Integer}=state_dim)
     state = Flux.state(model)
     args = (state_dim, input_dim, cost_dim, hidden_dim, depth, latent_dim)
     kwargs = (; activation=activation, max_seq_len=max_seq_len)
@@ -127,10 +134,11 @@ end
 Construct and train a `RefinementModel`, inferring state/input/cost dimensions from the first element of
 `data_iter`. Network construction is controlled by `hidden_dim`, `depth`, and `activation`; all
 positional `args...`/`kwargs...` are forwarded to [`train!`](@ref) (e.g., refinement steps,
-transition/mismatch/cost functions, optimiser, checkpointing). Returns `(model, losses)`.
+transition/mismatch/cost functions, optimiser, checkpointing). Returns a named tuple
+`(model=trained, metrics=metrics_log, init_model=untrained_copy)`.
 """
 function build(::Type{RefinementModel}, data_iter, args...;
-               hidden_dim::Integer=64, depth::Integer=2, activation=Flux.σ, max_seq_len::Int=512, latent_dim::Integer=nothing, kwargs...)
+               hidden_dim::Integer=64, depth::Integer=2, activation=Flux.σ, max_seq_len::Int=512, latent_dim::Union{Nothing,Integer}=nothing, kwargs...)
     first_sample = first(data_iter)
     first_sample isa ShootingBundle || throw(ArgumentError("data_iter must yield ShootingBundle objects"))
     length(args) >= 4 || throw(ArgumentError("build(::Type{RefinementModel}, data_iter, refine_steps, backprop_steps, transition_fn, traj_cost_fn, ...) requires at least four positional training arguments"))
@@ -151,12 +159,13 @@ function build(::Type{RefinementModel}, data_iter, args...;
     latent_dim_val = latent_dim === nothing ? state_dim : Int(latent_dim)
 
     model = RefinementModel(state_dim, input_dim, cost_dim, hidden_dim_val, depth_val; activation=activation, max_seq_len=max_seq_len, latent_dim=latent_dim_val)
+    init_model = deepcopy(model)
     construction_args = (state_dim=state_dim, input_dim=input_dim, cost_dim=cost_dim, hidden_dim=hidden_dim_val,
                          depth=depth_val, activation=activation, max_seq_len=max_seq_len, latent_dim=latent_dim_val)
 
-    model, losses = train!(model, data_iter, args...;
-                           construction_args=construction_args, kwargs...)
-    return model, losses
+    model, metrics = train!(model, data_iter, args...;
+                            construction_args=construction_args, kwargs...)
+    return (; model, metrics, init_model)
 end
 
 end # module

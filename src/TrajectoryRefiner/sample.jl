@@ -3,6 +3,7 @@ mutable struct ShootingBundle
     x_guess::AbstractArray          # (state_dim, seq_len, batch) excludes initial state
     u_guess::AbstractArray          # (input_dim, seq_len, batch)
     x_target::Union{Nothing,AbstractArray} # optional imitation target (state_dim, seq_len, batch)
+    latent::Union{Nothing,AbstractArray}   # optional latent sequence (latent_dim, seq_len, batch)
 end
 
 # -- Shape helpers -------------------------------------------------------------
@@ -82,7 +83,7 @@ end
 
 # -- Constructors --------------------------------------------------------------
 
-function ShootingBundle(x0::AbstractArray, x_guess::AbstractArray, u_guess::AbstractArray; x_target=nothing)
+function ShootingBundle(x0::AbstractArray, x_guess::AbstractArray, u_guess::AbstractArray; x_target=nothing, latent=nothing)
     x0 = _as_state_seq(x0, "x0")
     size(x0, 2) == 1 || throw(ArgumentError("x0 must have a single time dimension"))
 
@@ -102,5 +103,17 @@ function ShootingBundle(x0::AbstractArray, x_guess::AbstractArray, u_guess::Abst
     seq_len_body = seq_len_x
     target = _coerce_target(x_target, state_dim, seq_len_body, batch)
 
-    return ShootingBundle(x0, x_guess, u_guess, target)
+    latent_seq = latent
+    if latent_seq !== nothing
+        nd = ndims(latent_seq)
+        if nd == 2
+            latent_seq = reshape(latent_seq, size(latent_seq, 1), size(latent_seq, 2), 1)
+        elseif nd != 3
+            throw(_errmsg("latent", nd))
+        end
+        size(latent_seq, 2) == seq_len_body || throw(ArgumentError("latent sequence length $(size(latent_seq,2)) must equal x_guess length $seq_len_body"))
+        latent_seq = _match_batch3(latent_seq, batch, "latent")
+    end
+
+    return ShootingBundle(x0, x_guess, u_guess, target, latent_seq)
 end

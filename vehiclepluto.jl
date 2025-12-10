@@ -37,23 +37,8 @@ end
 # ╔═╡ 02466dca-7603-4891-9769-dc779fd65dc8
 begin
 
-"""
-    VehicleTrajectoryIterator(epsilon_state::AbstractVector; epsilon_input=nothing,
-                              path::AbstractString="data/car/trajectories.jld2",
-                              rng::AbstractRNG=Random.default_rng())
-
-Create a mutable iterator over vehicle trajectories stored in `trajectories.jld2`. Each iteration
-draws a target trajectory by truncating a random prefix, and produces a noisy guess trajectory by
-blending uniform samples from the state/input sets with the data trajectory using elementwise
-weights `epsilon_state`/`epsilon_input`: `eps .* random + (1 - eps) .* data`. When the internal state
-runs past the dataset length, the data are shuffled and iteration wraps around.
-"""
 mutable struct VehicleTrajectoryIterator
     data::Vector{Any}
-    epsilon_state::Vector{<:Real}
-    epsilon_input::Vector{<:Real}
-    state_set::LazySet
-    input_set::LazySet
     rng::Random.AbstractRNG
     start_min::Int
     start_max::Int
@@ -63,25 +48,13 @@ mutable struct VehicleTrajectoryIterator
     max_epoch::Integer
 end
 
-function VehicleTrajectoryIterator(dataset::AbstractVector,
-                                   epsilon_state::AbstractVector,
-                                   epsilon_input::AbstractVector,
-                                   state_set::LazySet,
-                                   input_set::LazySet;
+function VehicleTrajectoryIterator(dataset::AbstractVector;
                                    rng::Random.AbstractRNG=Random.default_rng(),
                                    start_min::Int=1,
                                    start_max::Union{Nothing,Int}=nothing,
                                    max_epoch::Int=1,
                                    max_iter::Union{Nothing,Int}=nothing)
     isempty(dataset) && throw(ArgumentError("trajectory dataset is empty"))
-
-    epsilon_state_vec = Float32.(collect(epsilon_state))
-    state_dim = size(dataset[1].state_trajectory, 1)
-    state_dim == length(epsilon_state_vec) || throw(ArgumentError("epsilon_state length must match state dimension ($state_dim)"))
-
-    input_dim = size(dataset[1].input_signal, 1)
-    epsilon_input_vec = Float32.(collect(epsilon_input))
-    input_dim == length(epsilon_input_vec) || throw(ArgumentError("epsilon_input length must match input dimension ($input_dim)"))
 
     dataset_vec = collect(dataset)
     shuffle!(rng, dataset_vec)
@@ -93,19 +66,14 @@ function VehicleTrajectoryIterator(dataset::AbstractVector,
     start_max_val >= 1 || throw(ArgumentError("start_max must allow at least one step"))
     start_min <= start_max_val || throw(ArgumentError("start_min must be ≤ start_max"))
 
-    return VehicleTrajectoryIterator(dataset_vec, epsilon_state_vec, epsilon_input_vec,
-                                     state_set, input_set, rng, start_min, start_max_val,
+    return VehicleTrajectoryIterator(dataset_vec, rng, start_min, start_max_val,
                                      1, 1, max_iter_val, max_epoch)
 end
 
-function VehicleTrajectoryIterator(epsilon_state::AbstractVector, epsilon_input::AbstractVector;
-                                   path::AbstractString="data/car/trajectories.jld2",
-                                   state_set::LazySet,
-                                   input_set::LazySet, kwargs...)
+function VehicleTrajectoryIterator(; path::AbstractString="data/car/trajectories.jld2", kwargs...)
     dataset_dict = load(path)
     dataset = haskey(dataset_dict, "data") ? dataset_dict["data"] : dataset_dict
-    return VehicleTrajectoryIterator(dataset, epsilon_state, epsilon_input,
-                                     state_set, input_set; kwargs...)
+    return VehicleTrajectoryIterator(dataset; kwargs...)
 end
 
 end
@@ -166,8 +134,8 @@ function cost_fn(x_tensor::AbstractArray)
 	oc = min.(Flux.relu(Float32.(5.0) .- abs.(x[1:1, :] - x[10:10, :])), Flux.relu(Float32.(2.0) .- abs.(x[2:2, :] - x[11:11, :])))
 
 	# terminal cost 
-	tc = hcat(zeros(1, size(x_tensor, 2)-1), Flux.relu(x[8, end] - x[1, end]))
-
+	tc = fill(Flux.relu(x[8, end] - x[1, end]), 1, size(x_tensor, 2))
+	
 	return vcat(bc, fc, oc, tc)
 end
 
@@ -181,20 +149,16 @@ end
 # ╔═╡ eab311cb-4227-4968-8ecf-52e07780b513
 let 
 	ds = discrete_vehicles(0.25)
-	eps_state = ones(13)*1.0
-	eps_input = ones(2)*1.0
 	car_data = load("data/car/trajectories.jld2")["data"]
 	overidx = [d.state_trajectory[1, end] - d.state_trajectory[8, end] > 0 for d in car_data]
 	over_data = car_data[overidx]
-	iterator = VehicleTrajectoryIterator(over_data, eps_state, eps_input,
-	                                     ds.X, ds.U; max_epoch=8, max_iter=10000,
+	iterator = VehicleTrajectoryIterator(over_data; max_epoch=1, max_iter=10000,
 										 start_min = 28)
 	transition_model = load_transition_network("data/car/vehiclenet.jld2")
 	transition_fn = (x,u) -> Float32.(transition_model(Float32.(x), Float32.(u)))
 
 	# testing error
-	test_iterator = VehicleTrajectoryIterator(over_data, eps_state, eps_input,
-	                                     ds.X, ds.U; max_epoch=1, max_iter=100,
+	test_iterator = VehicleTrajectoryIterator(over_data; max_epoch=1, max_iter=100,
 										 start_min = 28)
 	sb, _ = iterate(test_iterator)
 	x_res = rollout_guess(sb, transition_fn)
@@ -221,8 +185,16 @@ let
 	end
 	losses, findmax(losses)
 
-	build(RefinementModel, iterator, 5, 1, transition_fn, cost_fn, mismatch_fn; depth=2, imitation_weight=0.0, opt=Flux.OptimiserChain(Flux.ClipGrad(), Flux.ClipNorm(), Flux.Adam()))
+	fluxopt = Flux.OptimiserChain(Flux.ClipGrad(), Flux.ClipNorm(), Flux.Adam())
+	
+	res = build(RefinementModel, iterator, 5, 1, transition_fn, cost_fn, mismatch_fn; depth=3, imitation_weight=0.0, opt=fluxopt, backprop_mode=:min_loss)
+	
 end
+
+# ╔═╡ fd987af3-e968-4340-b62b-304144a8a691
+md"""
+- Option to change mismatch function and trajectory loss using softmax to approximate the maximum.
+"""
 
 # ╔═╡ Cell order:
 # ╠═329b39a0-cc1f-11f0-372b-33fb7f28c501
@@ -232,3 +204,4 @@ end
 # ╠═cc6ab58a-4dfa-4df3-8e68-10e968df6eeb
 # ╠═c8e15445-b1c1-4f9f-968c-030a00544956
 # ╠═eab311cb-4227-4968-8ecf-52e07780b513
+# ╠═fd987af3-e968-4340-b62b-304144a8a691

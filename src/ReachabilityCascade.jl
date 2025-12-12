@@ -75,14 +75,15 @@ module SequenceTransform
     using Flux
     using ..GatedLinearUnits: glu_mlp
 
-    export ScanMixer, ForwardCumsumBlock, ReverseCumsumBlock, DirectBlock, SequenceTransformation
+export ScanMixer, ForwardCumsumBlock, ReverseCumsumBlock, DirectBlock, SequenceTransformation, AttentionFFN
 
     include("SequenceTransform/blocks.jl")
     include("SequenceTransform/layer.jl")
+    include("SequenceTransform/attention.jl")
     include("SequenceTransform/transformation.jl")
 end
 using .SequenceTransform
-export ScanMixer, SequenceTransformation
+export ScanMixer, SequenceTransformation, AttentionFFN
 
 #############
 # Trajectory refiner

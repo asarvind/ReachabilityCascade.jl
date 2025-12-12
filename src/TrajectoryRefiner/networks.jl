@@ -59,14 +59,17 @@ zeros are appended to the guess branch.
 - `latent_dim`: Dimension of the latent sequence appended to each timestep (default `state_dim`).
 - `activation`: Activation function.
 """
-function RefinementModel(state_dim::Int, input_dim::Int, cost_dim::Int, hidden_dim::Int, depth::Int; activation=Flux.σ, max_seq_len::Int=512, latent_dim::Int=state_dim)
+function RefinementModel(state_dim::Int, input_dim::Int, cost_dim::Int, hidden_dim::Int, depth::Int;
+                         activation=Flux.σ, max_seq_len::Int=512, latent_dim::Int=state_dim,
+                         attention_heads::Int=1)
     cost_dim > 0 || throw(ArgumentError("cost_dim must be positive"))
     latent_dim > 0 || throw(ArgumentError("latent_dim must be positive"))
     # Inputs to the network are concatenated: x_res, x_guess, u_guess, cost_body
     net_in_dim = 2 * state_dim + input_dim + cost_dim + latent_dim
     out_dim = state_dim + input_dim + latent_dim
 
-    core_net = SequenceTransformation(net_in_dim, hidden_dim, out_dim, depth, state_dim, activation; max_seq_len=max_seq_len)
+    core_net = SequenceTransformation(net_in_dim, hidden_dim, out_dim, depth, state_dim, activation;
+                                      max_seq_len=max_seq_len, nheads=attention_heads)
 
     return RefinementModel(core_net, cost_dim, latent_dim)
 end

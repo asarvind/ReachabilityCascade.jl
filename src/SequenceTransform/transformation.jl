@@ -1,45 +1,51 @@
 using Flux
 
 """
-    SequenceTransformation(in_dim::Int, hidden_dim::Int, out_dim::Int, depth::Int, context_dim::Int=0, activation=Flux.σ; max_seq_len::Int=512)
+    SequenceTransformation(in_dim::Int, hidden_dim::Int, out_dim::Int, depth::Int,
+                           context_dim::Int=0, activation=Flux.gelu;
+                           max_seq_len::Int=512, nheads::Int=1)
 
-A chain of `ScanMixer` layers.
+    A chain of attention + dense projection layers (`AttentionFFN` by default) with binary positional encodings
+    cached up to `max_seq_len`, appended at every layer.
 
 Arguments:
 - `in_dim`: Dimension of the input features.
-- `hidden_dim`: Dimension of the features within each internal `ScanMixer` block and the output of internal layers.
+- `hidden_dim`: Dimension of the features within each internal block and the output of internal layers.
 - `out_dim`: Dimension of the final output features.
-- `depth`: Number of `ScanMixer` layers to stack.
+- `depth`: Number of layers to stack.
 - `context_dim`: Dimension of the context vector (optional).
-- `activation`: Activation function used in the internal blocks.
+    - `activation`: Activation function used in the internal projection blocks (default `Flux.gelu`).
+- `max_seq_len`: Maximum supported sequence length for cached positional encodings.
+- `nheads`: Number of attention heads for the internal attention blocks (default 2).
 
-Returns a `Flux.Chain` of `ScanMixer` layers with precomputed positional encodings up to `max_seq_len`.
+Returns a `Flux.Chain` of `AttentionFFN` layers.
 """
 struct SequenceTransformation{C}
     chain::C
 end
 
-function SequenceTransformation(in_dim::Int, hidden_dim::Int, out_dim::Int, depth::Int, context_dim::Int=0, activation=Flux.σ; max_seq_len::Int=512)
+function SequenceTransformation(in_dim::Int, hidden_dim::Int, out_dim::Int, depth::Int,
+                                context_dim::Int=0, activation=Flux.gelu;
+                                max_seq_len::Int=512, nheads::Int=1)
     layers = []
-    
-    # First layer: Projects from input dimension to hidden dimension
-    push!(layers, ScanMixer(in_dim + context_dim, hidden_dim, hidden_dim, activation; max_seq_len=max_seq_len))
-    
-    # Middle layers: Stay in hidden dimension
+
+    block_in = in_dim + context_dim
+    # First layer (adds positional encoding)
+    push!(layers, AttentionFFN(block_in, hidden_dim, depth == 1 ? out_dim : hidden_dim;
+                                 activation=activation, max_seq_len=max_seq_len, nheads=nheads, add_pos=true))
+
+    # Middle layers (if any) — also add positional encodings, stay at hidden_dim
     for _ in 2:depth-1
-        push!(layers, ScanMixer(hidden_dim + context_dim, hidden_dim, hidden_dim, activation; max_seq_len=max_seq_len))
+        push!(layers, AttentionFFN(hidden_dim + context_dim, hidden_dim, hidden_dim;
+                                     activation=activation, max_seq_len=max_seq_len, nheads=nheads, add_pos=true))
     end
-    
-    # Last layer: Projects from hidden dimension to output dimension
-    # If depth is 1, the first layer is also the last layer, so we need to handle that.
-    if depth == 1
-        # Re-create the single layer to output out_dim
-        empty!(layers)
-        push!(layers, ScanMixer(in_dim + context_dim, hidden_dim, out_dim, activation; max_seq_len=max_seq_len))
-    else
-        push!(layers, ScanMixer(hidden_dim + context_dim, hidden_dim, out_dim, activation; max_seq_len=max_seq_len))
+
+    # Last layer (when depth > 1) — add positional encoding
+    if depth > 1
+        push!(layers, AttentionFFN(hidden_dim + context_dim, hidden_dim, out_dim;
+                                     activation=activation, max_seq_len=max_seq_len, nheads=nheads, add_pos=true))
     end
-    
+
     return SequenceTransformation(Chain(layers...))
 end
 

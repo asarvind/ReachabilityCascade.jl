@@ -9,7 +9,10 @@ using ..TrajectoryRefiner: RefinementModel, ShootingBundle, refinement_loss, ref
            transition_fn, traj_cost_fn, traj_mismatch_fn;
            opt=Flux.OptimiserChain(Flux.ClipNorm(), Flux.Adam()),
            imitation_weight=1.0,
-           backprop_mode::Symbol=:tail)
+           backprop_mode::Symbol=:tail,
+           softmax_temperature::Real=1.0,
+           save_path=nothing, save_period::Real=60.0,
+           load_path=save_path, construction_args::Union{Nothing,NamedTuple}=nothing)
 
 Train a trajectory refiner (`RefinementModel`) using unrolled refinement steps and truncated
 backpropagation. `data_iter` must yield `ShootingBundle` objects carrying `x0` (initial state),
@@ -42,7 +45,7 @@ function train!(model::RefinementModel, data_iter, refine_steps::Int, backprop_s
                 opt=Flux.OptimiserChain(Flux.ClipNorm(), Flux.Adam()),
                 imitation_weight::Real=1.0,
                 save_path=nothing, save_period::Real=60.0,
-                load_path=nothing, construction_args::Union{Nothing,NamedTuple}=nothing,
+                load_path=save_path, construction_args::Union{Nothing,NamedTuple}=nothing,
                 backprop_mode::Symbol=:tail,
                 softmax_temperature::Real=1.0)
     backprop_steps <= refine_steps || throw(ArgumentError("backprop_steps must be ≤ refine_steps"))
@@ -59,23 +62,55 @@ function train!(model::RefinementModel, data_iter, refine_steps::Int, backprop_s
     opt_state = Flux.setup(opt, model)
     metrics_log = NamedTuple{(:loss, :traj_cost, :mismatch, :imitation, :best_step), NTuple{5, Float32}}[]
     last_save = time()
+    worst_bundle = nothing
+    worst_loss = -Inf
 
     for sample in data_iter
         sample isa ShootingBundle || throw(ArgumentError("data_iter must yield ShootingBundle objects"))
         tbatch = sample
 
-        grads, metrics = refinement_grads(model, transition_fn, traj_cost_fn, traj_mismatch_fn,
-                                          tbatch, refine_steps, backprop_steps;
-                                          imitation_weight=imitation_weight,
-                                          backprop_mode=backprop_mode,
-                                          softmax_temperature=softmax_temperature)
-        Flux.update!(opt_state, model, grads)
+        # Gradient/update on current sample; reuse its loss for worst-bundle tracking.
+        grads_curr, metrics_curr = refinement_grads(model, transition_fn, traj_cost_fn, traj_mismatch_fn,
+                                                   tbatch, refine_steps, backprop_steps;
+                                                   imitation_weight=imitation_weight,
+                                                   backprop_mode=backprop_mode,
+                                                   softmax_temperature=softmax_temperature)
+        curr_loss = metrics_curr.loss
+        Flux.update!(opt_state, model, grads_curr)
 
-        push!(metrics_log, (Float32(metrics.loss),
-                            Float32(metrics.traj_cost),
-                            Float32(metrics.mismatch),
-                            Float32(metrics.imitation),
-                            Float32(get(metrics, :best_step, 0))))
+        # Initialize or update the stored worst bundle using cached losses.
+        if worst_bundle === nothing
+            worst_bundle = deepcopy(tbatch)
+            worst_loss = curr_loss
+        else
+            # Re-evaluate worst bundle loss on the updated model only if needed.
+            worst_metrics = refinement_loss(model, transition_fn, traj_cost_fn, traj_mismatch_fn, worst_bundle, refine_steps;
+                                            imitation_weight=imitation_weight,
+                                            softmax_temperature=softmax_temperature)
+            worst_eval = worst_metrics.loss
+            if curr_loss > worst_eval
+                worst_bundle = deepcopy(tbatch)
+                worst_loss = curr_loss
+            else
+                worst_loss = worst_eval
+            end
+        end
+
+        # Gradient/update on worst-loss bundle (if tracked).
+        if worst_bundle !== nothing
+            grads_worst, _ = refinement_grads(model, transition_fn, traj_cost_fn, traj_mismatch_fn,
+                                              worst_bundle, refine_steps, backprop_steps;
+                                              imitation_weight=imitation_weight,
+                                              backprop_mode=backprop_mode,
+                                              softmax_temperature=softmax_temperature)
+            Flux.update!(opt_state, model, grads_worst)
+        end
+
+        push!(metrics_log, (Float32(metrics_curr.loss),
+                            Float32(metrics_curr.traj_cost),
+                            Float32(metrics_curr.mismatch),
+                            Float32(metrics_curr.imitation),
+                            Float32(get(metrics_curr, :best_step, 0))))
 
         if save_path !== nothing && (time() - last_save) >= save_period
             construction_args === nothing && throw(ArgumentError("construction_args must be provided to save checkpoints"))
@@ -100,9 +135,10 @@ Save a refinement model checkpoint along with its construction arguments using `
 """
 function save_refinement_model(path::AbstractString, model::RefinementModel;
                                state_dim::Int, input_dim::Int, cost_dim::Int, hidden_dim::Int, depth::Int,
-                               activation=relu, max_seq_len::Int=512, latent_dim::Union{Nothing,Integer}=state_dim)
+                               activation=relu, max_seq_len::Int=512, latent_dim::Union{Nothing,Integer}=state_dim,
+                               attention_heads::Int=2)
     state = Flux.state(model)
-    args = (state_dim, input_dim, cost_dim, hidden_dim, depth, latent_dim)
+    args = (state_dim, input_dim, cost_dim, hidden_dim, depth, latent_dim, attention_heads)
     kwargs = (; activation=activation, max_seq_len=max_seq_len)
     JLD2.jldsave(path; state, args, kwargs)
     return path
@@ -119,10 +155,12 @@ function load_refinement_model(path::AbstractString; activation=nothing)
     args = data["args"]
     stored_kwargs = get(data, "kwargs", (;))
     state = data["state"]
-    state_dim, input_dim, cost_dim, hidden_dim, depth, latent_dim = args
+    state_dim, input_dim, cost_dim, hidden_dim, depth, latent_dim, attention_heads = args
     act = activation === nothing ? get(stored_kwargs, :activation, Flux.σ) : activation
     max_seq_len = get(stored_kwargs, :max_seq_len, 512)
-    model = RefinementModel(state_dim, input_dim, cost_dim, hidden_dim, depth; activation=act, max_seq_len=max_seq_len, latent_dim=latent_dim)
+    model = RefinementModel(state_dim, input_dim, cost_dim, hidden_dim, depth;
+                            activation=act, max_seq_len=max_seq_len, latent_dim=latent_dim,
+                            attention_heads=attention_heads)
     Flux.loadmodel!(model, state)
     return model
 end
@@ -138,7 +176,8 @@ transition/mismatch/cost functions, optimiser, checkpointing). Returns a named t
 `(model=trained, metrics=metrics_log, init_model=untrained_copy)`.
 """
 function build(::Type{RefinementModel}, data_iter, args...;
-               hidden_dim::Integer=64, depth::Integer=2, activation=Flux.σ, max_seq_len::Int=512, latent_dim::Union{Nothing,Integer}=nothing, kwargs...)
+               hidden_dim::Integer=64, depth::Integer=2, activation=Flux.σ, max_seq_len::Int=512,
+               latent_dim::Union{Nothing,Integer}=nothing, attention_heads::Integer=1, kwargs...)
     first_sample = first(data_iter)
     first_sample isa ShootingBundle || throw(ArgumentError("data_iter must yield ShootingBundle objects"))
     length(args) >= 4 || throw(ArgumentError("build(::Type{RefinementModel}, data_iter, refine_steps, backprop_steps, transition_fn, traj_cost_fn, ...) requires at least four positional training arguments"))
@@ -157,11 +196,15 @@ function build(::Type{RefinementModel}, data_iter, args...;
     hidden_dim_val = Int(hidden_dim)
     depth_val = Int(depth)
     latent_dim_val = latent_dim === nothing ? state_dim : Int(latent_dim)
+    att_heads_val = Int(attention_heads)
 
-    model = RefinementModel(state_dim, input_dim, cost_dim, hidden_dim_val, depth_val; activation=activation, max_seq_len=max_seq_len, latent_dim=latent_dim_val)
+    model = RefinementModel(state_dim, input_dim, cost_dim, hidden_dim_val, depth_val;
+                            activation=activation, max_seq_len=max_seq_len,
+                            latent_dim=latent_dim_val, attention_heads=att_heads_val)
     init_model = deepcopy(model)
     construction_args = (state_dim=state_dim, input_dim=input_dim, cost_dim=cost_dim, hidden_dim=hidden_dim_val,
-                         depth=depth_val, activation=activation, max_seq_len=max_seq_len, latent_dim=latent_dim_val)
+                         depth=depth_val, activation=activation, max_seq_len=max_seq_len,
+                         latent_dim=latent_dim_val, attention_heads=att_heads_val)
 
     model, metrics = train!(model, data_iter, args...;
                             construction_args=construction_args, kwargs...)

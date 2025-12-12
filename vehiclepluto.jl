@@ -28,10 +28,28 @@ using LazySets
 using Flux
 import ReachabilityCascade
 import ReachabilityCascade: build, RefinementModel
-import ReachabilityCascade.TrajectoryRefiner: rollout_guess, refinement_grads, refinement_loss
+import ReachabilityCascade.TrajectoryRefiner: rollout_guess, refinement_grads, refinement_loss, ShootingBundle
 import ReachabilityCascade.CarDataGeneration: discrete_vehicles
 import ReachabilityCascade: TransitionNetwork, load_transition_network
 	
+end
+
+# ╔═╡ 1da55fe5-95a1-4588-b3e7-98caaf251f89
+function mpc_vehicle(x₀::Vector{<:Real}, π::RefinementModel, refine_steps::Integer, trmod::TransitionNetwork, costfn::Function, maxtime::Integer)
+
+	traj = zeros(Float32, size(x₀, 1), (maxtime+1))
+	traj[:, 1] = Float32.(x₀) 
+	for i in 1:maxtime
+		x_curr = traj[:, i]
+		body_len = maxtime
+		x_guess = repeat(Float32.(x_curr), 1, body_len)           # 2D; constructor will promote
+		u_guess = zeros(Float32, trmod.input_dim, body_len)        # 2D; constructor will promote
+		shoot = ShootingBundle(Float32.(x_curr), x_guess, u_guess)
+		res = π(shoot, trmod, costfn, refine_steps)
+		traj[:, i+1] = trmod(x_curr, res.u_guess[:, 1])
+	end
+
+	return traj, maximum(costfn(traj))
 end
 
 # ╔═╡ 02466dca-7603-4891-9769-dc779fd65dc8
@@ -40,20 +58,22 @@ begin
 mutable struct VehicleTrajectoryIterator
     data::Vector{Any}
     rng::Random.AbstractRNG
-    start_min::Int
-    start_max::Int
     iter::Integer
     epoch::Integer
     max_iter::Integer
     max_epoch::Integer
+    epoch_period::Integer
+    start_step_shift::Integer
+    start_max::Integer
 end
 
 function VehicleTrajectoryIterator(dataset::AbstractVector;
                                    rng::Random.AbstractRNG=Random.default_rng(),
-                                   start_min::Int=1,
-                                   start_max::Union{Nothing,Int}=nothing,
                                    max_epoch::Int=1,
-                                   max_iter::Union{Nothing,Int}=nothing)
+                                   max_iter::Union{Nothing,Int}=nothing,
+                                   epoch_period::Int=1,
+                                   start_step_shift::Int=1,
+                                   start_max::Union{Nothing,Int}=nothing)
     isempty(dataset) && throw(ArgumentError("trajectory dataset is empty"))
 
     dataset_vec = collect(dataset)
@@ -61,13 +81,15 @@ function VehicleTrajectoryIterator(dataset::AbstractVector;
     max_iter_val = max_iter === nothing ? length(dataset_vec) : max_iter
     max_iter_val > 0 || throw(ArgumentError("max_iter must be positive"))
     max_epoch > 0 || throw(ArgumentError("max_epoch must be positive"))
-    default_max_start = size(dataset_vec[1].state_trajectory, 2) - 1
-    start_max_val = start_max === nothing ? default_max_start : start_max
+    epoch_period > 0 || throw(ArgumentError("epoch_period must be positive"))
+    start_step_shift > 0 || throw(ArgumentError("start_step_shift must be positive"))
+    default_start_max = size(dataset_vec[1].state_trajectory, 2) - 1
+    start_max_val = start_max === nothing ? default_start_max : start_max
     start_max_val >= 1 || throw(ArgumentError("start_max must allow at least one step"))
-    start_min <= start_max_val || throw(ArgumentError("start_min must be ≤ start_max"))
 
-    return VehicleTrajectoryIterator(dataset_vec, rng, start_min, start_max_val,
-                                     1, 1, max_iter_val, max_epoch)
+    return VehicleTrajectoryIterator(dataset_vec, rng,
+                                     1, 1, max_iter_val, max_epoch,
+                                     epoch_period, start_step_shift, start_max_val)
 end
 
 function VehicleTrajectoryIterator(; path::AbstractString="data/car/trajectories.jld2", kwargs...)
@@ -96,9 +118,8 @@ function Base.iterate(iter::VehicleTrajectoryIterator, state::Tuple{Int,Int}=(it
     T = size(x_full, 2)
     T > 1 || throw(ArgumentError("trajectory must have at least two state samples"))
 
-    upper = min(iter.start_max, T - 1)
-    lower = min(iter.start_min, upper)
-    start_idx = rand(iter.rng, lower:upper)
+    shift = ((epoch - 1) ÷ iter.epoch_period) * iter.start_step_shift
+    start_idx = clamp((T - 1) - shift, 1, iter.start_max)
     x_segment = x_full[:, start_idx:end]
     body_len = size(x_segment, 2) - 1
     u_segment = u_full[:, start_idx:(start_idx + body_len - 1)]
@@ -128,10 +149,10 @@ function cost_fn(x_tensor::AbstractArray)
 	bc = Flux.relu(abs.(x .- center(X)) .- radius_hyperrectangle(X)).*scale 
 
 	# forward collision cost 
-	fc = min.(Flux.relu(Float32.(5.0) .- abs.(x[1:1, :] - x[8:8, :])), Flux.relu(Float32.(2.0) .- abs.(x[2:2, :] - x[9:9, :])))
+	fc = min.(Flux.relu(Float32.(5.0) .- abs.(x[1:1, :] - x[8:8, :])), Flux.relu(Float32.(2.0) .- (x[2:2, :] - x[9:9, :])))
 	
 	# oncoming collision cost 
-	oc = min.(Flux.relu(Float32.(5.0) .- abs.(x[1:1, :] - x[10:10, :])), Flux.relu(Float32.(2.0) .- abs.(x[2:2, :] - x[11:11, :])))
+	oc = min.(Flux.relu(Float32.(5.0) .- abs.(x[1:1, :] - x[10:10, :])), Flux.relu(Float32.(2.0) .- (x[11:11, :] - x[2:2, :])))
 
 	# terminal cost 
 	tc = fill(Flux.relu(x[8, end] - x[1, end]), 1, size(x_tensor, 2))
@@ -143,7 +164,7 @@ end
 function mismatch_fn(x::AbstractArray, y::AbstractArray)
 	scale = Float32.([1.0, 1.0, 10.0, 1.0, 10.0, 10.0, 10.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
 	diff = Float32.(x) .- Float32.(y)
-	return sum(abs.(diff) .* scale)/size(x, 2)
+	return abs.(diff) .* scale
 end
 
 # ╔═╡ eab311cb-4227-4968-8ecf-52e07780b513
@@ -152,14 +173,12 @@ let
 	car_data = load("data/car/trajectories.jld2")["data"]
 	overidx = [d.state_trajectory[1, end] - d.state_trajectory[8, end] > 0 for d in car_data]
 	over_data = car_data[overidx]
-	iterator = VehicleTrajectoryIterator(over_data; max_epoch=1, max_iter=10000,
-										 start_min = 28)
+	iterator = VehicleTrajectoryIterator(over_data; max_epoch=10, max_iter=nothing, start_max=1)
 	transition_model = load_transition_network("data/car/vehiclenet.jld2")
 	transition_fn = (x,u) -> Float32.(transition_model(Float32.(x), Float32.(u)))
 
 	# testing error
-	test_iterator = VehicleTrajectoryIterator(over_data; max_epoch=1, max_iter=100,
-										 start_min = 28)
+	test_iterator = VehicleTrajectoryIterator(over_data; max_epoch=1, max_iter=100)
 	sb, _ = iterate(test_iterator)
 	x_res = rollout_guess(sb, transition_fn)
 	loss_cost = cost_fn(cat(sb.x0, sb.x_guess; dims=2))
@@ -187,21 +206,18 @@ let
 
 	fluxopt = Flux.OptimiserChain(Flux.ClipGrad(), Flux.ClipNorm(), Flux.Adam())
 	
-	res = build(RefinementModel, iterator, 5, 1, transition_fn, cost_fn, mismatch_fn; depth=3, imitation_weight=0.0, opt=fluxopt, backprop_mode=:min_loss)
+	res = build(RefinementModel, iterator, 8, 1, transition_fn, cost_fn, mismatch_fn;
+	            hidden_dim=128, depth=3, imitation_weight=0.0, opt=fluxopt, backprop_mode=:tail,
+	            max_seq_len=30, softmax_temperature=1.0, save_path="data/car/temp/refnet.jld2")
 	
 end
-
-# ╔═╡ fd987af3-e968-4340-b62b-304144a8a691
-md"""
-- Option to change mismatch function and trajectory loss using softmax to approximate the maximum.
-"""
 
 # ╔═╡ Cell order:
 # ╠═329b39a0-cc1f-11f0-372b-33fb7f28c501
 # ╠═6b799ba4-d33a-4a98-9623-46ad55a186df
+# ╠═1da55fe5-95a1-4588-b3e7-98caaf251f89
 # ╠═02466dca-7603-4891-9769-dc779fd65dc8
 # ╠═879af5e1-9bb4-4398-bc8b-eda26a775d40
 # ╠═cc6ab58a-4dfa-4df3-8e68-10e968df6eeb
 # ╠═c8e15445-b1c1-4f9f-968c-030a00544956
 # ╠═eab311cb-4227-4968-8ecf-52e07780b513
-# ╠═fd987af3-e968-4340-b62b-304144a8a691

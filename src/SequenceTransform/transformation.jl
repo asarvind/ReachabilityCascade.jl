@@ -15,8 +15,8 @@ Arguments:
 - `depth`: Number of layers to stack.
 - `context_dim`: Dimension of the context vector (optional).
     - `activation`: Activation function used in the internal projection blocks (default `Flux.gelu`).
-- `max_seq_len`: Maximum supported sequence length for cached positional encodings.
-- `nheads`: Number of attention heads for the internal attention blocks (default 2).
+    - `max_seq_len`: Maximum supported sequence length for cached positional encodings.
+    - `nheads`: Number of attention heads for the internal attention blocks (default 2).
 
 Returns a `Flux.Chain` of `AttentionFFN` layers.
 """
@@ -30,17 +30,13 @@ function SequenceTransformation(in_dim::Int, hidden_dim::Int, out_dim::Int, dept
     layers = []
 
     block_in = in_dim + context_dim
-    # First layer (adds positional encoding)
+    # Attention path: append positional encodings at every layer.
     push!(layers, AttentionFFN(block_in, hidden_dim, depth == 1 ? out_dim : hidden_dim;
                                  activation=activation, max_seq_len=max_seq_len, nheads=nheads, add_pos=true))
-
-    # Middle layers (if any) — also add positional encodings, stay at hidden_dim
     for _ in 2:depth-1
         push!(layers, AttentionFFN(hidden_dim + context_dim, hidden_dim, hidden_dim;
                                      activation=activation, max_seq_len=max_seq_len, nheads=nheads, add_pos=true))
     end
-
-    # Last layer (when depth > 1) — add positional encoding
     if depth > 1
         push!(layers, AttentionFFN(hidden_dim + context_dim, hidden_dim, out_dim;
                                      activation=activation, max_seq_len=max_seq_len, nheads=nheads, add_pos=true))

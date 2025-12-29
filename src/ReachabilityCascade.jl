@@ -1,6 +1,18 @@
 module ReachabilityCascade
 
 #############
+# Training API (shared generics)
+#############
+module TrainingAPI
+    export train!, build, save, load, gradient
+    function train! end
+    function build end
+    function save end
+    function load end
+    function gradient end
+end
+
+#############
 # Core systems
 #############
 module ControlSystem
@@ -75,33 +87,63 @@ module SequenceTransform
     using Flux
     using ..GatedLinearUnits: glu_mlp
 
-export ScanMixer, ForwardCumsumBlock, ReverseCumsumBlock, DirectBlock, SequenceTransformation, AttentionFFN
+    export SequenceTransformation, AttentionFFN
 
-    include("SequenceTransform/blocks.jl")
-    include("SequenceTransform/layer.jl")
     include("SequenceTransform/attention.jl")
     include("SequenceTransform/transformation.jl")
 end
 using .SequenceTransform
-export ScanMixer, SequenceTransformation, AttentionFFN
+export SequenceTransformation, AttentionFFN
 
 #############
-# Trajectory refiner
+# Latent difference network
 #############
-module TrajectoryRefiner
-    using Flux
+module LatentDifferenceNetworks
+    import Flux
+    using Random
+    using JLD2
+    using ..GatedLinearUnits: glu_mlp
+    using ..SequenceTransform: SequenceTransformation
+    using ..ControlSystem: DiscreteRandomSystem
+    import ..TrainingAPI: save, load
+
+    include("LatentDifferenceNet/utils.jl")
+    include("LatentDifferenceNet/network.jl")
+    include("LatentDifferenceNet/io.jl")
+    include("LatentDifferenceNet/perturbation.jl")
+    include("LatentDifferenceNet/eval.jl")
+    include("LatentDifferenceNet/perturbation_training.jl")
+
+    export RefinementRNN, DeltaNetwork,
+           spsa_update!, testrun,
+           train_perturbation!, build_perturbation,
+           save, load
+end
+using .LatentDifferenceNetworks: RefinementRNN, DeltaNetwork,
+                                 spsa_update!, testrun,
+                                 train_perturbation!, build_perturbation,
+                                 save, load
+export RefinementRNN, DeltaNetwork,
+       spsa_update!, testrun,
+       train_perturbation!, build_perturbation,
+       save, load
+
+#############
+# Reactive denoising network (model-free)
+#############
+module ReactiveDenoisingNetworks
+    import Flux
     using ..SequenceTransform: SequenceTransformation
 
-    include("TrajectoryRefiner/sample.jl")
-    include("TrajectoryRefiner/networks.jl")
-    include("TrajectoryRefiner/gradients.jl")
-    include("TrajectoryRefiner/training.jl")
-    using .TrajectoryRefinerTraining: train!, build
+    include("ReactiveDenoisingNet/network.jl")
+    include("ReactiveDenoisingNet/io.jl")
+    include("ReactiveDenoisingNet/gradients.jl")
+    include("ReactiveDenoisingNet/training.jl")
+    include("ReactiveDenoisingNet/eval.jl")
 
-    export ShootingBundle, RefinementModel, refinement_loss, refinement_grads, train!, build,
-           save_refinement_model, load_refinement_model
+    export ReactiveDenoisingNet
 end
-using .TrajectoryRefiner
-export RefinementModel, train!, save_refinement_model, load_refinement_model
+using .ReactiveDenoisingNetworks: ReactiveDenoisingNet
+export ReactiveDenoisingNet
 
 end

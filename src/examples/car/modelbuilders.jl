@@ -46,7 +46,7 @@ function safe_discrete_vehicles(t::Real)
 	return DiscreteRandomSystem(cs, V, κ, t)
 end
 
-function discrete_car(t::Real)
+function discrete_car(t::Real; dt=0.001)
 	X = Hyperrectangle(
 		vcat([50, 4.0, 0.0, 10.0], zeros(3)),
 		[100, 3.0, 1.0, 10.0, 1.0, 1.0, 0.2]
@@ -60,18 +60,29 @@ function discrete_car(t::Real)
 		zeros(2), [1.0, 10.0]
 	)
 
-	cs = ContinuousSystem(X, U, carfield)
+	x_lo = X.center .- X.radius
+	x_hi = X.center .+ X.radius
+	u_lo = U.center .- U.radius
+	u_hi = U.center .+ U.radius
+
+	function carfield_clamped(x::Vector{<:Real}, u::Vector{<:Real}, w::Vector{<:Real}=zeros(7))
+		x_clamped = clamp.(x, x_lo, x_hi)
+		u_clamped = clamp.(u, u_lo, u_hi)
+		return carfield(x_clamped, u_clamped, w)
+	end
+
+	cs = ContinuousSystem(X, U, carfield_clamped)
 	
 	κ = (x, u, t) -> [0.4*(u[1] - x[3]), u[2]]
 
-	return DiscreteRandomSystem(cs, V, κ, t)	
+	return DiscreteRandomSystem(cs, V, κ, t; dt=dt)	
 end
 
-function discrete_vehicles(t::Real)
+function discrete_vehicles(t::Real; dt=0.001)
 
 	function vehicle_transition(x::AbstractVector, u::AbstractVector)
 		
-		ds = discrete_car(t)
+		ds = discrete_car(t; dt=dt)
 		ego_next = ds(x[1:7], u)
 	
 		x8next = x[8] + t*x[10]
@@ -93,4 +104,3 @@ function discrete_vehicles(t::Real)
 
 	return DiscreteRandomSystem(X, V, vehicle_transition)
 end
-

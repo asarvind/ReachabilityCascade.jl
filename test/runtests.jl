@@ -7,6 +7,5 @@ include("SequenceTransform/sequencetransform_tests.jl")
 #
 include("TransitionModels/transition_network_tests.jl")
 include("TransitionModels/transition_training_tests.jl")
-include("ReactiveDenoisingNet/reactive_denoising_forward_tests.jl")
-include("ReactiveDenoisingNet/reactive_denoising_training_tests.jl")
-include("ReactiveDenoisingNet/reactive_denoising_eval_tests.jl")
+include("NormalizingFlows/flow_tests.jl")
+include("InvertibleGame/invertible_coupling_tests.jl")

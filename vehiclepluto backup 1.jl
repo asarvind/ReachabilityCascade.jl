@@ -53,7 +53,7 @@ function thiscost(x::AbstractMatrix)
 	return vcat(bc, fc, oc, tc)
 end
 
-# ╔═╡ db52797b-f0ed-4ed5-9c7e-ab1531ff1618
+# ╔═╡ DB52797B-F0ED-4ED5-9C7E-AB1531FF1618
 begin
 	struct CarImitationIterator{D}
 		data::D
@@ -70,7 +70,7 @@ begin
 	end
 end
 
-# ╔═╡ 3b22a351-c4b6-4935-b77b-4b86f32fcf59
+# ╔═╡ 3B22A351-C4B6-4935-B77B-4B86F32FCF59
 begin
 	function Base.iterate(it::CarImitationIterator, state::Int=1)
 		state > length(it.idxs) && return nothing
@@ -112,7 +112,7 @@ let
 	# ----------------------------
 	# Training kwargs (edit these)
 	# ----------------------------
-	steps = 1
+	steps = 8
 	epochs = 1000
 	opt = Flux.Adam(1f-3)
 	rng = Random.default_rng(sd)
@@ -177,7 +177,7 @@ end
 # ╠═329b39a0-cc1f-11f0-372b-33fb7f28c501
 # ╠═6b799ba4-d33a-4a98-9623-46ad55a186df
 # ╠═ed3cdc8b-8fec-4901-8376-be99505a027e
-# ╠═db52797b-f0ed-4ed5-9c7e-ab1531ff1618
-# ╠═3b22a351-c4b6-4935-b77b-4b86f32fcf59
+# ╠═DB52797B-F0ED-4ED5-9C7E-AB1531FF1618
+# ╠═3B22A351-C4B6-4935-B77B-4B86F32FCF59
 # ╠═c1f6d4f2-2b1f-4c42-a3e8-5e24c5b9ad33
 # ╠═622a5bac-db30-4677-a4a4-f1aadab2218c

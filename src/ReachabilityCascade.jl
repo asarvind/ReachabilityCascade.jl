@@ -96,6 +96,38 @@ using .SequenceTransform
 export SequenceTransformation, AttentionFFN
 
 #############
+# Normalizing flows
+#############
+module NormalizingFlows
+    import Flux
+    using Random
+
+    using ..GatedLinearUnits: glu_mlp
+
+    export CouplingLayer, NormalizingFlow, encode, decode
+
+    include("NormalizingFlows/NormalizingFlows.jl")
+end
+using .NormalizingFlows: CouplingLayer, NormalizingFlow, encode, decode
+export CouplingLayer, NormalizingFlow, encode, decode
+
+#############
+# Invertible game (two-player)
+#############
+module InvertibleGame
+    import Flux
+    using Random
+
+    using ..GatedLinearUnits: glu_mlp
+
+    export InvertibleCoupling, encode, decode
+
+    include("InvertibleGame/InvertibleGame.jl")
+end
+using .InvertibleGame: InvertibleCoupling
+export InvertibleGame, InvertibleCoupling
+
+#############
 # Latent difference network
 #############
 module LatentDifferenceNetworks
@@ -127,23 +159,5 @@ export RefinementRNN, DeltaNetwork,
        spsa_update!, testrun,
        train_perturbation!, build_perturbation,
        save, load
-
-#############
-# Reactive denoising network (model-free)
-#############
-module ReactiveDenoisingNetworks
-    import Flux
-    using ..SequenceTransform: SequenceTransformation
-
-    include("ReactiveDenoisingNet/network.jl")
-    include("ReactiveDenoisingNet/io.jl")
-    include("ReactiveDenoisingNet/gradients.jl")
-    include("ReactiveDenoisingNet/training.jl")
-    include("ReactiveDenoisingNet/eval.jl")
-
-    export ReactiveDenoisingNet
-end
-using .ReactiveDenoisingNetworks: ReactiveDenoisingNet
-export ReactiveDenoisingNet
 
 end

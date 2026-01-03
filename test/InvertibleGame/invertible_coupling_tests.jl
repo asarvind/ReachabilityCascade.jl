@@ -126,6 +126,20 @@ end
     @test length(extras.true_hinges) == B
     @test all(isfinite, extras.true_hinges)
     @test all(isfinite, (extras.accept_true, extras.reject_other, extras.fool_other))
+
+    grads2, loss2, extras2 = ReachabilityCascade.TrainingAPI.gradient(a, b, x_true, c;
+                                                                      rng=rng,
+                                                                      merge=:sign_agree,
+                                                                      return_loss=true,
+                                                                      return_true_hinges=true,
+                                                                      return_components=true)
+    @test haskey(grads2, :layers)
+    @test isfinite(loss2)
+    @test extras2 isa NamedTuple
+    @test haskey(extras2, :true_hinges)
+    @test length(extras2.true_hinges) == B
+    @test all(isfinite, extras2.true_hinges)
+    @test all(isfinite, (extras2.accept_true, extras2.reject_other, extras2.fool_other))
 end
 
 @testset "InvertibleGame.inclusion_losses" begin

@@ -48,6 +48,7 @@ starts from the beginning when iterating `data_iter` again.
 - `w_true=1.0`: weight passed to the true inclusion loss.
 - `w_reject=1.0`: weight passed to the "reject other" loss.
 - `w_fool=1.0`: weight passed to the "fool other" loss.
+- `merge=:sum`: passed to [`TrainingAPI.gradient`](@ref) to combine inclusion vs adversarial gradients.
 - `use_memory=false`: if `true`, maintain a memory batch of the highest-hinge-loss *true* samples
   separately for each network. Once filled (first full batch), each update uses the concatenated
   true batch `[fresh  memory]` (so `2*batch_size` columns) and updates the memory by selecting the
@@ -73,6 +74,7 @@ function train!(model_a::InvertibleCoupling,
                 w_true::Real=1.0,
                 w_reject::Real=1.0,
                 w_fool::Real=1.0,
+                merge::Symbol=:sum,
                 use_memory::Bool=false,
                 opt=Flux.Adam(1f-3),
                 rng::Random.AbstractRNG=Random.default_rng(),
@@ -173,10 +175,12 @@ function train!(model_a::InvertibleCoupling,
                 grads_a, loss_a, extras_a = gradient(model_a, model_b, x_a, c_a;
                                                      margin_true=margin_true, margin_adv=margin_adv, rng=rng,
                                                      w_true=w_true, w_reject=w_reject, w_fool=w_fool,
+                                                     merge=merge,
                                                      return_loss=true, return_true_hinges=true)
                 grads_b, loss_b, extras_b = gradient(model_b, model_a, x_b, c_b;
                                                      margin_true=margin_true, margin_adv=margin_adv, rng=rng,
                                                      w_true=w_true, w_reject=w_reject, w_fool=w_fool,
+                                                     merge=merge,
                                                      return_loss=true, return_true_hinges=true)
 
                 # Update memory pre-update, using the true hinge losses over the combined batch.
@@ -186,10 +190,12 @@ function train!(model_a::InvertibleCoupling,
                 grads_a, loss_a = gradient(model_a, model_b, x_a, c_a;
                                            margin_true=margin_true, margin_adv=margin_adv, rng=rng,
                                            w_true=w_true, w_reject=w_reject, w_fool=w_fool,
+                                           merge=merge,
                                            return_loss=true)
                 grads_b, loss_b = gradient(model_b, model_a, x_b, c_b;
                                            margin_true=margin_true, margin_adv=margin_adv, rng=rng,
                                            w_true=w_true, w_reject=w_reject, w_fool=w_fool,
+                                           merge=merge,
                                            return_loss=true)
             end
 
@@ -230,10 +236,12 @@ function train!(model_a::InvertibleCoupling,
                     grads_a, loss_a, extras_a = gradient(model_a, model_b, x_a, c_a;
                                                          margin_true=margin_true, margin_adv=margin_adv, rng=rng,
                                                          w_true=w_true, w_reject=w_reject, w_fool=w_fool,
+                                                         merge=merge,
                                                          return_loss=true, return_true_hinges=true)
                     grads_b, loss_b, extras_b = gradient(model_b, model_a, x_b, c_b;
                                                          margin_true=margin_true, margin_adv=margin_adv, rng=rng,
                                                          w_true=w_true, w_reject=w_reject, w_fool=w_fool,
+                                                         merge=merge,
                                                          return_loss=true, return_true_hinges=true)
                     mem_filled_a = update_memory!(x_mem_a, c_mem_a, mem_filled_a, x_a, c_a, extras_a.true_hinges)
                     mem_filled_b = update_memory!(x_mem_b, c_mem_b, mem_filled_b, x_b, c_b, extras_b.true_hinges)
@@ -241,10 +249,12 @@ function train!(model_a::InvertibleCoupling,
                     grads_a, loss_a = gradient(model_a, model_b, x_a, c_a;
                                                margin_true=margin_true, margin_adv=margin_adv, rng=rng,
                                                w_true=w_true, w_reject=w_reject, w_fool=w_fool,
+                                               merge=merge,
                                                return_loss=true)
                     grads_b, loss_b = gradient(model_b, model_a, x_b, c_b;
                                                margin_true=margin_true, margin_adv=margin_adv, rng=rng,
                                                w_true=w_true, w_reject=w_reject, w_fool=w_fool,
+                                               merge=merge,
                                                return_loss=true)
                 end
                 Flux.update!(opt_state_a, model_a, grads_a)
@@ -297,6 +307,7 @@ and all other construction arguments are provided as keyword arguments.
 - `w_true=1.0`: passed to [`train!`](@ref).
 - `w_reject=1.0`: passed to [`train!`](@ref).
 - `w_fool=1.0`: passed to [`train!`](@ref).
+- `merge=:sum`: passed to [`train!`](@ref).
 - `use_memory=false`: passed to [`train!`](@ref).
 - `opt=Flux.Adam(1f-3)`: passed to [`train!`](@ref).
 - `rng=Random.default_rng()`: RNG passed to [`train!`](@ref) / [`gradient`](@ref) for latent sampling.
@@ -320,6 +331,7 @@ function build(::Type{InvertibleCoupling},
                w_true::Real=1.0,
                w_reject::Real=1.0,
                w_fool::Real=1.0,
+               merge::Symbol=:sum,
                use_memory::Bool=false,
                opt=Flux.Adam(1f-3),
                rng::Random.AbstractRNG=Random.default_rng(),
@@ -353,6 +365,7 @@ function build(::Type{InvertibleCoupling},
                  w_true=w_true,
                  w_reject=w_reject,
                  w_fool=w_fool,
+                 merge=merge,
                  use_memory=use_memory,
                  opt=opt,
                  rng=rng,

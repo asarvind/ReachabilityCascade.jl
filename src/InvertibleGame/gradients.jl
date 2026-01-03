@@ -1,4 +1,6 @@
 import Flux
+import Functors
+import ChainRulesCore
 using Statistics: mean
 
 import ..TrainingAPI: gradient
@@ -37,6 +39,10 @@ to get one update for each network (A vs B, and B vs A).
 - `w_true=1.0`: weight on the true-sample inclusion loss.
 - `w_reject=1.0`: weight on the "reject other" loss.
 - `w_fool=1.0`: weight on the "fool other" loss.
+- `merge=:sum`: how to combine inclusion vs adversarial gradients:
+  - `:sum` (default): backprop through the full weighted sum loss.
+  - `:sign_agree`: compute inclusion and adversarial gradients separately and merge them leaf-wise by sign agreement
+    (`0` counts as agreement, strict opposite signs are zeroed); any leaf that is `nothing` in either gradient is frozen.
 - `rng=Random.default_rng()`: RNG used to sample `z_self` and `z_other`.
 - `return_loss=false`: if `true`, also returns the scalar loss (and optional extras).
 - `return_true_hinges=false`: if `true`, include per-sample true hinge losses in `extras.true_hinges`.
@@ -48,6 +54,32 @@ to get one update for each network (A vs B, and B vs A).
 - If `return_loss=true` and no extras requested: `(grads, loss)`.
 - If `return_loss=true` and any extras requested: `(grads, loss, extras)`.
 """
+_merge_sign_agree(a, b) = begin
+    # Freeze the parameter if either side has no gradient.
+    (a === nothing || b === nothing) && return nothing
+    (a isa ChainRulesCore.AbstractZero || b isa ChainRulesCore.AbstractZero) && return nothing
+    (a isa ChainRulesCore.NoTangent || b isa ChainRulesCore.NoTangent) && return nothing
+
+    if a isa AbstractArray
+        b isa AbstractArray || throw(ArgumentError("gradient structures do not match (array vs non-array)"))
+        size(a) == size(b) || throw(DimensionMismatch("gradient leaf sizes do not match: $(size(a)) vs $(size(b))"))
+        opp = (a .* b) .< zero(eltype(a)) # strict opposite sign
+        merged = 0.5f0 .* (a .+ b)
+        return ifelse.(opp, zero(eltype(merged)), merged)
+    end
+
+    if a isa Number
+        b isa Number || throw(ArgumentError("gradient structures do not match (number vs non-number)"))
+        opp = (a * b) < zero(promote_type(typeof(a), typeof(b)))
+        return opp ? zero(promote_type(typeof(a), typeof(b))) : 0.5f0 * (a + b)
+    end
+
+    # Unknown leaf type: preserve the freeze-by-nothing behavior, otherwise error.
+    throw(ArgumentError("unsupported gradient leaf type $(typeof(a)); expected array/number/nothing"))
+end
+
+_merge_sign_agree_grads(g_true, g_adv) = Functors.fmap(_merge_sign_agree, g_true, g_adv)
+
 function gradient(model::InvertibleCoupling,
                   other::InvertibleCoupling,
                   x_true::AbstractMatrix,
@@ -57,6 +89,7 @@ function gradient(model::InvertibleCoupling,
                   w_true::Real=1.0,
                   w_reject::Real=1.0,
                   w_fool::Real=1.0,
+                  merge::Symbol=:sum,
                   rng=Random.default_rng(),
                   return_loss::Bool=false,
                   return_true_hinges::Bool=false,
@@ -93,7 +126,7 @@ function gradient(model::InvertibleCoupling,
     fool_other_ref = Ref{Float32}(0f0)
     true_hinges_ref = Ref{Vector{Float32}}(Float32[])
 
-    grads = Flux.gradient(model) do m
+    function compute_components(m)
         # 1) Accept true: encode true samples with `m`.
         z_true = encode(m, x_true32, c32)
         n_true = vec(sum(abs.(z_true); dims=1))
@@ -111,14 +144,44 @@ function gradient(model::InvertibleCoupling,
         n_seen_by_other = vec(sum(abs.(z_seen_by_other); dims=1))
         fool_other = mean(Flux.relu.(n_seen_by_other .- 1f0 .+ margin_adv32))
 
-        # Weighted sum so callers can enable "inclusion-only" training with `w_reject=0, w_fool=0`.
-        loss = w_true32 * accept_true + w_reject32 * reject_other + w_fool32 * fool_other
-        loss_ref[] = Float32(loss)
-        accept_true_ref[] = Float32(accept_true)
-        reject_other_ref[] = Float32(reject_other)
-        fool_other_ref[] = Float32(fool_other)
-        true_hinges_ref[] = Float32.(true_hinges)
-        return loss
+        return accept_true, reject_other, fool_other, true_hinges
+    end
+
+    grads = if merge == :sum
+        Flux.gradient(model) do m
+            accept_true, reject_other, fool_other, true_hinges = compute_components(m)
+            loss = w_true32 * accept_true + w_reject32 * reject_other + w_fool32 * fool_other
+            loss_ref[] = Float32(loss)
+            accept_true_ref[] = Float32(accept_true)
+            reject_other_ref[] = Float32(reject_other)
+            fool_other_ref[] = Float32(fool_other)
+            true_hinges_ref[] = Float32.(true_hinges)
+            return loss
+        end
+    elseif merge == :sign_agree
+        # Compute and log the scalar components once (with the full `model`) so return values are consistent.
+        accept_true0, reject_other0, fool_other0, true_hinges0 = compute_components(model)
+        loss0 = w_true32 * accept_true0 + w_reject32 * reject_other0 + w_fool32 * fool_other0
+        loss_ref[] = Float32(loss0)
+        accept_true_ref[] = Float32(accept_true0)
+        reject_other_ref[] = Float32(reject_other0)
+        fool_other_ref[] = Float32(fool_other0)
+        true_hinges_ref[] = Float32.(true_hinges0)
+
+        grads_true = Flux.gradient(model) do m
+            accept_true, _, _, _ = compute_components(m)
+            return w_true32 * accept_true
+        end
+        grads_adv = Flux.gradient(model) do m
+            _, reject_other, fool_other, _ = compute_components(m)
+            return w_reject32 * reject_other + w_fool32 * fool_other
+        end
+
+        # Merge by sign agreement, freezing any leaf that is `nothing` in either gradient.
+        merged = _merge_sign_agree_grads(grads_true[1], grads_adv[1])
+        (merged,)
+    else
+        throw(ArgumentError("unsupported merge=$(repr(merge)); expected :sum or :sign_agree"))
     end
 
     if !return_loss
@@ -131,12 +194,12 @@ function gradient(model::InvertibleCoupling,
 
     extras = NamedTuple()
     if return_true_hinges
-        extras = merge(extras, (; true_hinges=true_hinges_ref[]))
+        extras = Base.merge(extras, (; true_hinges=true_hinges_ref[]))
     end
     if return_components
-        extras = merge(extras, (; accept_true=accept_true_ref[],
-                                 reject_other=reject_other_ref[],
-                                 fool_other=fool_other_ref[]))
+        extras = Base.merge(extras, (; accept_true=accept_true_ref[],
+                                      reject_other=reject_other_ref[],
+                                      fool_other=fool_other_ref[]))
     end
     return grads[1], loss_ref[], extras
 end
@@ -150,6 +213,7 @@ function gradient(model::InvertibleCoupling,
                   w_true::Real=1.0,
                   w_reject::Real=1.0,
                   w_fool::Real=1.0,
+                  merge::Symbol=:sum,
                   rng=Random.default_rng(),
                   return_loss::Bool=false,
                   return_true_hinges::Bool=false,
@@ -164,6 +228,7 @@ function gradient(model::InvertibleCoupling,
                     w_true=w_true,
                     w_reject=w_reject,
                     w_fool=w_fool,
+                    merge=merge,
                     rng=rng,
                     return_loss=return_loss,
                     return_true_hinges=return_true_hinges,

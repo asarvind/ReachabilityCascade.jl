@@ -11,7 +11,8 @@ Normalizing flow built from GLU-MLP coupling layers (additive or affine), with f
 - `context_dim::Integer`: context dimension `C` (features); use `0` for no context.
 
 # Keyword Arguments
-- `spec`: `3×L` integer matrix specifying the coupling stack. Columns correspond to layers:
+- `spec`: `3×L` integer matrix specifying the coupling stack. Each column corresponds to a *pair* of coupling sublayers
+  with complementary masks (so the flow has `2L` sublayers total):
   - row 1: hidden width of the GLU-MLP conditioner (`hidden_dim`)
   - row 2: depth / number of GLU blocks (`n_glu`)
   - row 3: coupling type flag (`1` for affine, `0` for additive)
@@ -19,7 +20,7 @@ Normalizing flow built from GLU-MLP coupling layers (additive or affine), with f
 - `logscale_clamp::Real=2.0`: scale for `tanh`-bounded log-scales in affine coupling.
 - `rng::Random.AbstractRNG=Random.default_rng()`: RNG used to initialize the fixed random permutations.
 - `perms=nothing`: optional vector of fixed permutations (length `L`), each a `dim`-length vector of indices `1:dim`.
-  If provided, these permutations are used verbatim (useful for deterministic save/load).
+  If provided, each permutation is used for the two complementary sublayers of the corresponding `spec` column.
 
 # Returns
 - `flow::NormalizingFlow`: flow object which supports [`encode`](@ref) and [`decode`](@ref).
@@ -75,18 +76,25 @@ function NormalizingFlow(dim::Integer,
         end
     end
 
-    layers = Vector{Any}(undef, L)
+    # Each spec column expands into two sublayers with complementary masks that share the same permutation.
+    layers = Vector{Any}(undef, 2L)
     for i in 1:L
         hidden_i = spec_mat[1, i]
         depth_i = spec_mat[2, i]
         affine_i = spec_mat[3, i] == 1
         if perms === nothing
-            layers[i] = CouplingLayer(dim_int, ctx_int, hidden_i, depth_i, affine_i;
-                                      logscale_clamp=logscale_clamp, rng=rng)
+            base = CouplingLayer(dim_int, ctx_int, hidden_i, depth_i, affine_i;
+                                 logscale_clamp=logscale_clamp, flip=false, rng=rng)
+            comp = CouplingLayer(dim_int, ctx_int, hidden_i, depth_i, affine_i, base.perm;
+                                 logscale_clamp=logscale_clamp, flip=true)
         else
-            layers[i] = CouplingLayer(dim_int, ctx_int, hidden_i, depth_i, affine_i, perms[i];
-                                      logscale_clamp=logscale_clamp)
+            base = CouplingLayer(dim_int, ctx_int, hidden_i, depth_i, affine_i, perms[i];
+                                 logscale_clamp=logscale_clamp, flip=false)
+            comp = CouplingLayer(dim_int, ctx_int, hidden_i, depth_i, affine_i, perms[i];
+                                 logscale_clamp=logscale_clamp, flip=true)
         end
+        layers[2i - 1] = base
+        layers[2i] = comp
     end
 
     return NormalizingFlow(dim_int, ctx_int, spec_mat, Float32(logscale_clamp), layers)

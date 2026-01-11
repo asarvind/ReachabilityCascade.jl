@@ -5,7 +5,9 @@ import ..TrainingAPI: save, load
 
 _flow_constructor(flow::NormalizingFlow)::Tuple{NTuple{2,Int},NamedTuple} = begin
     args = (flow.dim, flow.context_dim)
-    perms = [layer.perm for layer in flow.layers]
+    # One permutation per `spec` column (two sublayers share the same permutation).
+    L = size(flow.spec, 2)
+    perms = [flow.layers[2i - 1].perm for i in 1:L]
     kwargs = (; spec=flow.spec, logscale_clamp=flow.logscale_clamp, perms=perms)
     return args, kwargs
 end

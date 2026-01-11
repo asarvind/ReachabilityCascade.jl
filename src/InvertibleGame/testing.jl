@@ -1,13 +1,13 @@
 import Flux
 
 """
-    inclusion_losses(model, data_iter; batch_size=32, margin_true=0.5) -> losses
+    inclusion_losses(model, data_iter; batch_size=32, margin_true=0.5, norm_kind=:l1) -> losses
 
 Compute per-sample inclusion hinge losses for ground-truth samples under an [`InvertibleCoupling`](@ref).
 
 For each ground-truth `(context, sample)` pair, we compute:
 1. `z = encode(model, sample, context)`
-2. `ℓ = relu(‖z‖₁ - 1 + margin_true)`
+2. `ℓ = relu(‖z‖ - 1 + margin_true)` where the norm is chosen by `norm_kind`
 
 and return a flat vector of `ℓ` values (one scalar per sample).
 
@@ -24,11 +24,16 @@ is treated as an already-batched mini-batch, and losses are returned per column.
 # Keyword Arguments
 - `batch_size=32`: batching used when `data_iter` yields vectors.
 - `margin_true=0.5`: hinge margin.
+- `norm_kind=:l1`: norm used in the hinge (`:l1`, `:l2`, or `:linf`).
 
 # Returns
 - `losses::Vector{Float32}`: per-sample hinge losses (flattened).
 """
-function inclusion_losses(model::InvertibleCoupling, data_iter; batch_size::Integer=32, margin_true::Real=0.5)
+function inclusion_losses(model::InvertibleCoupling,
+                          data_iter;
+                          batch_size::Integer=32,
+                          margin_true::Real=0.5,
+                          norm_kind::Symbol=:l1)
     batch_size > 0 || throw(ArgumentError("batch_size must be positive"))
 
     # Helper to enforce the training-style dataset contract: `(; context, sample)`.
@@ -45,7 +50,7 @@ function inclusion_losses(model::InvertibleCoupling, data_iter; batch_size::Inte
         x32 = Float32.(Matrix(x_batch))
         c32 = Float32.(Matrix(c_batch))
         z = encode(model, x32, c32)
-        norms = vec(sum(abs.(z); dims=1))
+        norms = _batch_norm(z, norm_kind)
         return Float32.(Flux.relu.(norms .- 1f0 .+ Float32(margin_true)))
     end
 

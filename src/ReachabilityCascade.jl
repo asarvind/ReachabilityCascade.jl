@@ -128,6 +128,13 @@ using .InvertibleGame: InvertibleCoupling
 export InvertibleGame, InvertibleCoupling
 
 #############
+# MPC utilities (shared names, dispatch on model)
+#############
+include("MPC/MPC.jl")
+using .MPC: trajectory, optimize_latent, mpc
+export trajectory, optimize_latent, mpc
+
+#############
 # Latent difference network
 #############
 module LatentDifferenceNetworks

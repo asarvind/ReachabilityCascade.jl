@@ -69,6 +69,8 @@ by mutating `iter` itself.
 
 # Keyword Arguments
 - `epochs=1`: number of dataset passes.
+- `epochs=1`: number of dataset passes. `epochs=0` performs no updates (but still loads from `load_path`
+  if present and saves to `save_path` if enabled).
 - `batch_size=32`: batch size used when `data_iter` yields single samples (vectors).
 - `use_memory=false`: if `true`, maintain a memory batch of the lowest log-likelihood samples seen so far.
   Once the memory is filled (first full batch), each gradient step uses the concatenated batch
@@ -110,9 +112,9 @@ function train!(model::NormalizingFlow,
                 save_path::Union{Nothing,AbstractString}="",
                 load_path::Union{Nothing,AbstractString}=save_path,
                 save_period::Real=60.0)
-    epochs >= 1 || throw(ArgumentError("epochs must be ≥ 1"))
+    epochs >= 0 || throw(ArgumentError("epochs must be non-negative"))
     batch_size >= 1 || throw(ArgumentError("batch_size must be ≥ 1"))
-    save_period > 0 || throw(ArgumentError("save_period must be positive"))
+    save_period >= 0 || throw(ArgumentError("save_period must be non-negative"))
     memory_merge in (:concat, :sign_agree) || throw(ArgumentError("memory_merge must be :concat or :sign_agree"))
 
     save_path_final = _maybe_path(save_path)

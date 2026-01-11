@@ -1,5 +1,6 @@
 import Flux
 using Random
+import NLopt
 using ..GatedLinearUnits: glu_mlp
 
 """
@@ -47,34 +48,168 @@ _default_spec() = begin
 end
 
 """
-    sample_latent_l1(rng, dim, batch) -> z
+    sample_latent_l1(rng, dim, batch; radius_min=0.0) -> z
 
 Sample a latent batch `z` whose columns lie inside the L1 unit ball, i.e. `‖z[:, j]‖₁ ≤ 1`.
 
 Construction (per column):
 1. Draw a random direction `u ~ N(0, I)`.
 2. Normalize it to have L1 norm 1.
-3. Draw a radius `r ~ Uniform(0, 1)` and scale: `z = r * u / ‖u‖₁`.
+3. Draw a radius `r ~ Uniform(radius_min, 1)` and scale: `z = r * u / ‖u‖₁`.
 
 # Arguments
 - `rng`: random number generator.
 - `dim`: latent dimension `D`.
 - `batch`: batch size `B` (number of columns).
 
+# Keyword Arguments
+- `radius_min=0.0`: minimum radius in `[0, 1]` for each column.
+
 # Returns
 - `z`: `Float32` matrix of size `D×B`.
 """
-sample_latent_l1(rng::Random.AbstractRNG, dim::Integer, batch::Integer) = begin
+sample_latent_l1(rng::Random.AbstractRNG, dim::Integer, batch::Integer; radius_min::Real=0.0) = begin
     D = Int(dim)
     B = Int(batch)
     D > 0 || throw(ArgumentError("dim must be positive"))
     B > 0 || throw(ArgumentError("batch must be positive"))
+    rmin = Float32(radius_min)
+    (0f0 <= rmin <= 1f0) || throw(ArgumentError("radius_min must be in [0, 1]; got $radius_min"))
 
     u = randn(rng, Float32, D, B)
     norms = vec(sum(abs.(u); dims=1)) .+ eps(Float32)
     direction = u ./ reshape(norms, 1, :)
-    radius = rand(rng, Float32, 1, B)  # independent per column in [0, 1]
+    radius = rmin .+ (1f0 - rmin) .* rand(rng, Float32, 1, B)  # independent per column in [rmin, 1]
     return direction .* radius
+end
+
+_batch_norm(z::AbstractMatrix, norm_kind::Symbol) = begin
+    norm_kind === :l1 && return vec(sum(abs.(z); dims=1))
+    norm_kind === :l2 && return sqrt.(vec(sum(abs2.(z); dims=1)))
+    norm_kind === :linf && return vec(maximum(abs.(z); dims=1))
+    throw(ArgumentError("unsupported norm_kind=$(repr(norm_kind)); expected :l1, :l2, or :linf"))
+end
+
+"""
+    sample_latent(rng, dim, batch; norm_kind=:l1, radius_min=0.0) -> z
+
+Sample a latent batch `z` whose columns lie inside the unit ball of the selected norm, i.e.
+`‖z[:, j]‖ ≤ 1` where the norm is one of `:l1`, `:l2`, or `:linf`.
+
+Construction (per column):
+1. Draw a random direction `u ~ N(0, I)`.
+2. Normalize it to have the chosen norm equal to 1.
+3. Draw a radius `r ~ Uniform(radius_min, 1)` and scale: `z = r * u / ‖u‖`.
+
+# Arguments
+- `rng`: random number generator.
+- `dim`: latent dimension `D`.
+- `batch`: batch size `B` (number of columns).
+
+# Keyword Arguments
+- `norm_kind=:l1`: norm used for normalization (`:l1`, `:l2`, or `:linf`).
+- `radius_min=0.0`: minimum radius in `[0, 1]` for each column.
+
+# Returns
+- `z`: `Float32` matrix of size `D×B`.
+"""
+sample_latent(rng::Random.AbstractRNG, dim::Integer, batch::Integer; norm_kind::Symbol=:l1, radius_min::Real=0.0) = begin
+    D = Int(dim)
+    B = Int(batch)
+    D > 0 || throw(ArgumentError("dim must be positive"))
+    B > 0 || throw(ArgumentError("batch must be positive"))
+    rmin = Float32(radius_min)
+    (0f0 <= rmin <= 1f0) || throw(ArgumentError("radius_min must be in [0, 1]; got $radius_min"))
+
+    u = randn(rng, Float32, D, B)
+    norms = _batch_norm(u, norm_kind) .+ eps(Float32)
+    direction = u ./ reshape(norms, 1, :)
+    radius = rmin .+ (1f0 - rmin) .* rand(rng, Float32, 1, B)  # independent per column in [rmin, 1]
+    return direction .* radius
+end
+
+"""
+    decode(model_decode, model_encode, context; kwargs...) -> u
+    decode(model_decode, model_encode, context; kwargs...) -> result
+
+Adversarial/consistency decode via latent optimization.
+
+This overload solves for a latent `z` (length `model_decode.dim`) that minimizes the mean of:
+1) the norm of `z` itself, and
+2) the norm of the re-encoded latent after decoding with `model_decode` and encoding with `model_encode`:
+   `z_cross = encode(model_encode, decode(model_decode, z, context), context)`.
+
+The optimized control is then `u = decode(model_decode, z*, context)`.
+
+# Arguments
+- `model_decode`: [`InvertibleCoupling`](@ref) used for decoding `z -> u`.
+- `model_encode`: [`InvertibleCoupling`](@ref) used for encoding `u -> z_cross`.
+- `context`: context vector of length `model_decode.context_dim`.
+
+# Keyword Arguments
+- `algo=:LN_BOBYQA`: NLopt algorithm symbol.
+- `init_z=nothing`: initial latent guess (defaults to zeros).
+- `max_time=Inf`: NLopt time cap (`maxtime`, seconds).
+- `seed=rand(1:10000)`: NLopt seed.
+- `norm_kind=:l1`: norm used in the objective (`:l1`, `:l2`, or `:linf`).
+- `u_len=nothing`: if provided, return only `u[1:u_len]`.
+- `return_meta=false`: if `true`, return a named tuple with fields `u`, `z`, `objective`, `result`.
+
+# Returns
+- If `return_meta=false`: `u` (vector).
+- If `return_meta=true`: named tuple `(; u, z, objective, result)`.
+"""
+function decode(model_decode::InvertibleCoupling,
+                model_encode::InvertibleCoupling,
+                context::AbstractVector;
+                algo::Symbol=:LN_BOBYQA,
+                init_z=nothing,
+                max_time::Real=Inf,
+                seed::Integer=rand(1:10000),
+                norm_kind::Symbol=:l1,
+                u_len=nothing,
+                return_meta::Bool=false)
+    model_decode.dim == model_encode.dim ||
+        throw(DimensionMismatch("model_encode.dim must match model_decode.dim"))
+    model_decode.context_dim == model_encode.context_dim ||
+        throw(DimensionMismatch("model_encode.context_dim must match model_decode.context_dim"))
+    length(context) == model_decode.context_dim ||
+        throw(DimensionMismatch("context must have length $(model_decode.context_dim)"))
+
+    D = model_decode.dim
+    init = init_z === nothing ? zeros(Float32, D) : Float32.(init_z isa AbstractVector ? init_z : vec(init_z))
+    length(init) == D || throw(DimensionMismatch("init_z must have length $D; got length=$(length(init))"))
+
+    c32 = Float32.(context)
+
+    function objective_fn(z::AbstractVector, grad::AbstractVector)
+        z32 = Float32.(z)
+        n_self = _batch_norm(reshape(z32, :, 1), norm_kind)[1]
+
+        u = decode(model_decode, z32, c32)
+        z_cross = encode(model_encode, u, c32)
+        n_cross = _batch_norm(reshape(z_cross, :, 1), norm_kind)[1]
+
+        return 0.5 * (Float64(n_self) + Float64(n_cross))
+    end
+
+    opt = NLopt.Opt(algo, D)
+    NLopt.min_objective!(opt, objective_fn)
+    NLopt.maxtime!(opt, max_time)
+    NLopt.srand(seed)
+
+    min_f, min_z, ret = NLopt.optimize(opt, init)
+    z_star = Float32.(min_z)
+    u_star = decode(model_decode, z_star, c32)
+    if u_len !== nothing
+        u_len_i = Int(u_len)
+        u_len_i >= 1 || throw(ArgumentError("u_len must be ≥ 1; got $u_len"))
+        length(u_star) >= u_len_i ||
+            throw(DimensionMismatch("decoded u has length $(length(u_star)), cannot slice to u_len=$u_len_i"))
+        u_star = u_star[1:u_len_i]
+    end
+
+    return return_meta ? (; u=u_star, z=z_star, objective=Float64(min_f), result=ret) : u_star
 end
 
 """

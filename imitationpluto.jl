@@ -20,81 +20,28 @@ Pkg.activate("SymlinkReachabilityCascade")
 end
 
 # ╔═╡ 70fe22ad-d8dc-4776-ba3b-a50399325484
-begin
+	begin
+		
+		using Random, LinearAlgebra
+		import NLopt
+		using Flux
+		import JLD2
+		import LazySets
+		import LazySets: center, radius_hyperrectangle
+		import ReachabilityCascade.CarDynamics: discrete_vehicles
+		import ReachabilityCascade: DiscreteRandomSystem, InvertibleCoupling, NormalizingFlow, load
+		import ReachabilityCascade.InvertibleGame: inclusion_losses, load_game, decode, load_self
+		import ReachabilityCascade: trajectory, optimize_latent, mpc
+		import ReachabilityCascade.TrainingAPI: build
+		
+	end
 	
-	using Random, LinearAlgebra
-	import NLopt
-	using Flux
-	import JLD2
-	import LazySets
-	import LazySets: center, radius_hyperrectangle
-	import ReachabilityCascade.CarDynamics: discrete_vehicles
-	import ReachabilityCascade: DiscreteRandomSystem, InvertibleCoupling
-	import ReachabilityCascade.InvertibleGame: inclusion_losses, load_game, decode
-	import ReachabilityCascade.TrainingAPI: build
-	
-end
 
 # ╔═╡ 9a1f6973-1363-4207-8a8f-713a47d253ce
-function trajectory(ds::DiscreteRandomSystem, model::InvertibleCoupling, x0::AbstractVector, z::AbstractVector, steps::Union{Integer, AbstractVector{<:Integer}})
-	zmat = reshape(z, model.dim, length(steps))
-	strj = x0	
-
-	for i in 1:length(steps)
-		t = steps[i]
-		κ = x -> decode(model, zmat[:, i], x)
-		x_start = strj[:, end]
-		strj = hcat(strj, ds(x_start, κ, t)[:, 2:end])
-	end
-
-	return strj
-end
-
-# ╔═╡ e4495e22-4860-4a8a-8fd0-7c696b54a310
-function optimize_latent(cost_fn::Function, ds::DiscreteRandomSystem, x0::AbstractVector, model::InvertibleCoupling, steps::Union{Integer, AbstractVector{<:Integer}}; algo::Symbol=:LN_BOBYQA, init_z::AbstractVector=zeros(Float32, model.dim*length(steps)), max_time::Real=Inf, seed::Integer=rand(1:10000))
-	
-	function my_objective_fn(z::AbstractVector, grad::AbstractVector)
-		strj = trajectory(ds, model, x0, z, steps)			
-		return sum(cost_fn(strj))/size(strj, 2)
-	end
-
-	l = model.dim*length(steps)
-	
-	opt = NLopt.Opt(algo, l)
-	NLopt.lower_bounds(opt, -ones(Float64, l))
-	NLopt.upper_bounds(opt, ones(Float64, l))
-	NLopt.min_objective!(opt, my_objective_fn)
-	NLopt.stopval!(opt, 0)
-	NLopt.maxtime!(opt, max_time)
-	NLopt.srand(seed)
-
-	min_f, min_z, ret = NLopt.optimize(opt, init_z)
-end
-
-# ╔═╡ e40e3a60-e812-456d-affc-10bd3e072d21
-function mpc(cost_fn::Function, ds::DiscreteRandomSystem, x0::AbstractVector, model::InvertibleCoupling, steps::Integer; algo::Symbol=:LN_PRAXIS, init_z::AbstractVector=zeros(Float32, model.dim*length(steps)), noise_fn::Union{Function, Nothing}=nothing, noise_weight::Real=0.0, noise_rng::Random.AbstractRNG=Random.default_rng(), max_time::Real=Inf, opt_steps::Union{Integer, AbstractVector{<:Integer}}=steps, opt_seed::Integer=rand(1:10000))
-	obj_vals = []
-	strj = x0
-	z = init_z
-
-	if noise_fn == nothing
-		nf = () -> LazySets.sample(ds.U; rng=noise_rng)
-	else
-		nf = noise_fn
-	end
-
-	for _ in 1:sum(steps)
-		x = strj[:, end]
-		obj_val, z, _ = optimize_latent(cost_fn, ds, x, model, opt_steps; algo=algo, init_z=z, max_time=max_time)
-		u = decode(model, z[1:model.dim], x)[1:length(center(ds.U))]
-		u_noise = nf()
-		u = u*(1-noise_weight) + u_noise*noise_weight
-		strj = hcat(strj, ds(x, u))
-		push!(obj_vals, obj_val)
-	end
-	
-	return strj, sum(cost_fn(strj)), obj_vals
-end
+	# These helpers live in the package now:
+	# - `ReachabilityCascade.trajectory`
+	# - `ReachabilityCascade.optimize_latent`
+	# - `ReachabilityCascade.mpc`
 
 # ╔═╡ d0fc8b98-37ca-4a26-8289-2b408846f7b6
 	begin
@@ -236,45 +183,148 @@ let
 	# Training args (edit these)
 	# ----------------------------
 
-	# epochs = 15
+	# epochs = 45
 	epochs = 0
 	batch_size = 100
 	opt = Flux.OptimiserChain(Flux.ClipGrad(), Flux.ClipNorm(), Flux.Adam(1f-4))
 	use_memory = true
-	merge = :sum
-	save_path = "data/car/temp/invertiblegame.jld2"
+	# EMA opponent smoothing schedule (used for opponent EMA during gradient computation).
+	ema_beta_start = 0.0
+	ema_beta_final = 0.999
+	ema_tau = 1f4
+	# Lower bound on sampled fake latent norm (0 means allow near-zero latents).
+	latent_radius_min = 0.0
+	# Gradient mode:
+	# - :sum            => one gradient on full loss
+	# - :orthogonal_adv => split gradients and orthogonalize adversarial component
+	grad_mode = :sum
+	norm_kind = :l2
+	save_path = "data/car/temp/selfinvertible.jld2"
 	load_path = save_path
 	save_period = 60.0
 
 	# DATA SLICE: edit this to control how much data is used for training.
 	# Keep this small while sanity-checking the notebook (the dataset is large).
 	thisdata = overtake_data[1:end]
-	it = CarFlowIterator(thisdata; rng=Random.MersenneTwister(0))
+	it_game = CarFlowIterator(thisdata; rng=Random.MersenneTwister(0))
 
-	# Two-player symmetric training: each network both fools and rejects the other.
-	model_a, model_b, losses_a, losses_b = build(InvertibleCoupling, it;
+	# Set `mode=:game` (two-player) or `mode=:self` (single-network, EMA provides fakes).
+	mode = :self
+
+	if mode == :game
+		# Two-player symmetric training: each network both fools and rejects the other.
+		model_a, model_b, losses_a, losses_b = build(InvertibleCoupling, it_game;
+			spec=spec,
+			logscale_clamp=logscale_clamp,
+			margin_true=margin_true,
+			margin_adv=margin_adv,
+			w_true=w_true,
+			w_reject=w_reject,
+			w_fool=w_fool,
+			epochs=epochs,
+			batch_size=batch_size,
+			opt=opt,
+			use_memory=use_memory,
+			latent_radius_min=latent_radius_min,
+			ema_beta_start=ema_beta_start,
+			ema_beta_final=ema_beta_final,
+			ema_tau=ema_tau,
+			grad_mode=grad_mode,
+			norm_kind=norm_kind,
+			save_path=save_path,
+			load_path=load_path,
+			save_period=save_period,
+			rng=Random.MersenneTwister(1),      # latent sampling RNG
+			rng_a=Random.MersenneTwister(2),    # model A init RNG (permutations/weights)
+			rng_b=Random.MersenneTwister(3),    # model B init RNG (permutations/weights)
+		)
+		(; losses_a, losses_b)
+	else
+		save_path_self = replace(save_path, "invertiblegame" => "invertiblegame_self")
+		load_path_self = save_path_self
+		model, ema, losses = build(InvertibleCoupling, it_game, :self;
+			spec=spec,
+			logscale_clamp=logscale_clamp,
+			margin_true=margin_true,
+			margin_adv=margin_adv,
+			w_true=w_true,
+			w_reject=w_reject,
+			epochs=epochs,
+			batch_size=batch_size,
+			opt=opt,
+			use_memory=use_memory,
+			latent_radius_min=latent_radius_min,
+			ema_beta_start=ema_beta_start,
+			ema_beta_final=ema_beta_final,
+			ema_tau=ema_tau,
+			grad_mode=grad_mode,
+			norm_kind=norm_kind,
+			save_path=save_path_self,
+			load_path=load_path_self,
+			save_period=save_period,
+			rng=Random.MersenneTwister(1),       # latent sampling RNG
+			rng_model=Random.MersenneTwister(200), # model init RNG
+		)
+		(; losses, model, ema)
+	end
+		
+end
+
+# ╔═╡ 3b6f10e2-41c2-4b5a-9e63-5c15b0f8e5a1
+let
+	# NormalizingFlow baseline (trained on the same dataset/iterator format).
+	#
+	# NOTE: `epochs=0` means this cell will just load from `load_path_flow` (if present) and save to `save_path_flow`.
+	# Set `epochs>0` when you actually want to train.
+
+	# Dataset format example: `data/car/trajectories.jld2` (key "data").
+	# This follows the same overtake-data filter used in `vehiclepluto.jl`.
+	data = JLD2.load("data/car/trajectories.jld2", "data")
+	overtake_idx = [d.state_trajectory[1, end] - d.state_trajectory[8, end] > 0 for d in data]
+	overtake_data = data[overtake_idx]
+
+	# ----------------------------
+	# NormalizingFlow args (match InvertibleCoupling config)
+	# ----------------------------
+	spec = [128 128 128;
+	        1   1   1;
+	        1   1   1]
+	logscale_clamp = 2.0
+
+	# ----------------------------
+	# Training args (match InvertibleCoupling config)
+	# ----------------------------
+	epochs = 0
+	batch_size = 100
+	opt = Flux.OptimiserChain(Flux.ClipGrad(), Flux.ClipNorm(), Flux.Adam(1f-4))
+	save_period = 60.0
+
+	# DATA SLICE: edit this to control how much data is used for training.
+	# Keep this small while sanity-checking the notebook (the dataset is large).
+	thisdata = overtake_data[1:end]
+
+	save_path_flow = "data/car/temp/normalizingflow.jld2"
+	load_path_flow = save_path_flow
+
+	# Separate iterator instance so (when `epochs>0`) both trainings can be reproducible independently.
+	# Use the same iterator RNG seed as the InvertibleCoupling training cell for reproducibility.
+	it_flow = CarFlowIterator(thisdata; rng=Random.MersenneTwister(0))
+
+	flow, losses_flow = build(NormalizingFlow, it_flow;
 		spec=spec,
 		logscale_clamp=logscale_clamp,
-		margin_true=margin_true,
-		margin_adv=margin_adv,
-		w_true=w_true,
-		w_reject=w_reject,
-		w_fool=w_fool,
+		# Use a fixed init RNG (same seed as `rng_a` in the InvertibleCoupling cell) for reproducibility.
+		rng=Random.MersenneTwister(2000),
 		epochs=epochs,
 		batch_size=batch_size,
 		opt=opt,
-		use_memory=use_memory,
-		merge = merge,
-		save_path=save_path,
-		load_path=load_path,
+		use_memory=false,
+		save_path=save_path_flow,
+		load_path=load_path_flow,
 		save_period=save_period,
-		rng=Random.MersenneTwister(1),      # latent sampling RNG
-		rng_a=Random.MersenneTwister(2),    # model A init RNG (permutations/weights)
-		rng_b=Random.MersenneTwister(3),    # model B init RNG (permutations/weights)
 	)
 
-	(; losses_a, losses_b)
-	
+	(; losses_flow)
 end
 
 # ╔═╡ 5a9f6a0a-9a6a-4d21-ae4b-67d122a2b2b3
@@ -361,7 +411,7 @@ let
 	#
 	# This uses `CarFlowSequentialIterator` so every time index of every selected trajectory is evaluated.
 
-	save_path = "data/car/temp/invertiblegame.jld2"
+	save_path = "data/car/selfadversarial.jld2"
 
 	model_a, model_b, _ = load_game(save_path)
 
@@ -377,8 +427,8 @@ let
 	thisdata_test = overtake_data[1:1]
 	it_test = CarFlowSequentialIterator(thisdata_test)
 
-	losses_a_inclusion = inclusion_losses(model_a, it_test; batch_size=batch_size_test, margin_true=margin_true_test)
-	losses_b_inclusion = inclusion_losses(model_b, it_test; batch_size=batch_size_test, margin_true=margin_true_test)
+	losses_a_inclusion = inclusion_losses(model_a, it_test; batch_size=batch_size_test, margin_true=margin_true_test, norm_kind=:l1)
+	losses_b_inclusion = inclusion_losses(model_b, it_test; batch_size=batch_size_test, margin_true=margin_true_test, norm_kind=:l1)
 
 	(; losses_a_inclusion, losses_b_inclusion)
 end
@@ -409,8 +459,10 @@ let
 	data = JLD2.load("data/car/trajectories.jld2", "data")
 	overtake_idx = [d.state_trajectory[1, end] - d.state_trajectory[8, end] > 0 && d.state_trajectory[1, 1] < d.state_trajectory[8, 1] for d in data]
 	overtake_data = data[overtake_idx]
-	save_path = "data/car/temp/invertiblegame.jld2"
-	model_a, model_b, _ = load_game(save_path)
+	save_game = "data/car/unitinvert/selfInitSeed2000Iter0Epoch45EmaL0U999R1f4Latseed1.jld2"
+	save_flow = "data/car/flowmodels/flowInitSeed2000Iter0Epoch45.jld2"
+	model_a, _ = load_self(save_game)
+	model_flow = load(NormalizingFlow, save_flow)
 	z = randn(2)
 	z = Float32.(z*rand() / norm(z, 1))
 	κ = x -> decode(model_a, z, x)
@@ -423,34 +475,84 @@ let
 	# steps = [15, 28 - start_time - 15 + 1]
 	steps = 28
 
-	algo = :LN_COBYLA
-	max_time = 0.1
+	algo = :LN_PRAXIS
+	max_time = 0.02
 
-	@time res_a = optimize_latent(thiscost, ds, x0, model_a, steps; algo=algo, max_time=max_time)
-	@time res_b = optimize_latent(thiscost, ds, x0, model_b, steps; algo=algo, max_time=max_time)
+	noise_rng_flow = MersenneTwister(rand(1:10000))
+	noise_rng_game_a = deepcopy(noise_rng_flow)
+	noise_rng_game_b = deepcopy(noise_rng_flow)
 
-	res_a, res_b, idtest, x0
+	drift_steps = 2
+	res_drift = mpc(thiscost, ds, x0, model_flow, drift_steps; algo=algo, max_time=max_time, noise_weight=0.2, noise_rng=noise_rng_game_b, opt_steps=[14, 14], opt_seed=1)
+	x_drift = res_drift.trajectory[:, drift_steps]
+	# x_drift = x0
 
-	obj_a, z_a, _ = res_a
-	obj_b, z_b, _ = res_b
+	res_game_a = mpc(thiscost, ds, x_drift, [model_a], 20; algo=algo, max_time=max_time, noise_weight=0.0, noise_rng=noise_rng_game_a, opt_steps=[28], opt_seed=1)
 
+	# res_game_b = mpc(thiscost, ds, x0, model_b, 20; algo=algo, max_time=max_time, noise_weight=0.2, noise_rng=noise_rng_game_b, opt_steps=[10, 10], opt_seed=1)
+
+	res_flow = mpc(thiscost, ds, x_drift, model_flow, 28; algo=algo, max_time=max_time, noise_weight=0.0, noise_rng=noise_rng_flow, opt_steps=[28], opt_seed=1)
+
+	res_game_a, res_flow
+end
+
+# ╔═╡ 39a52a27-dd19-446e-9f43-520b170bac8c
+let
+	ds = discrete_vehicles(0.25; dt=0.01)
+	data = JLD2.load("data/car/trajectories.jld2", "data")
+	overtake_idx = [d.state_trajectory[1, end] - d.state_trajectory[8, end] > 0 && d.state_trajectory[1, 1] < d.state_trajectory[8, 1] for d in data]
+	overtake_data = data[overtake_idx]
 	
-	trajectory(ds, model_a, x0, z_a, steps), trajectory(ds, model_b, x0, z_b, steps), obj_a, obj_b, z_a, z_b, x0, idtest
+	invunit_path = "data/car/unitinvert/selfInitSeed200Iter0Epoch45EmaL0U999R1f4Latseed1.jld2"
+	flow_path = "data/car/flowmodels/flowInitSeed200Iter0Epoch45.jld2"
+	model_invunit, _ = load_self(invunit_path)
+	model_flow = load(NormalizingFlow, flow_path)
 
-	mpc(thiscost, ds, x0, model_a, 20; algo=algo, max_time=max_time, noise_weight=0.00, noise_rng=MersenneTwister(1), opt_steps=20, opt_seed=1)
+
+	algo = :LN_COBYLA
+	max_time = 0.02
+	drift_steps = 2
+
+	num_sim = 10
+
+	noise_rng = MersenneTwister(200)
+
+	cost_res = Vector{Float64}[]
+
+	data_shuffled = shuffle(noise_rng, overtake_data)
+
+	for i in 1:num_sim 
+		strj, utrj = data_shuffled[i]
+		x0 = strj[:, 1]
+		
+		res_drift = mpc(thiscost, ds, x0, model_flow, drift_steps; algo=algo, max_time=max_time, noise_weight=0.2, noise_rng=noise_rng, opt_steps=[28], opt_seed=1)
+		x_drift = res_drift.trajectory[:, drift_steps]
+
+		res_invunit = mpc(thiscost, ds, x_drift, model_invunit, 20; algo=algo, max_time=max_time, noise_weight=0.0, opt_steps=[28], opt_seed=1)
+		
+		res_flow = mpc(thiscost, ds, x_drift, model_flow, 28; algo=algo, max_time=max_time, noise_weight=0.0, opt_steps=[28], opt_seed=1)
+
+		res_id_stair = mpc(thiscost, ds, x_drift, (x, z)->z, 28; algo=algo, max_time=max_time, noise_weight=0.0, opt_steps=[28], opt_seed=1, latent_dim = 2)
+
+		res_id_full = mpc(thiscost, ds, x_drift, (x, z)->z, 28; algo=algo, max_time=max_time, noise_weight=0.0, opt_steps=repeat([1], 28), opt_seed=1,  latent_dim=2)
+
+		push!(cost_res, [res_invunit.total_cost, res_flow.total_cost, res_id_stair.total_cost, res_id_full.total_cost])
+	end
+
+	cost_res
 end
 
 # ╔═╡ Cell order:
 # ╠═deaa37a2-e572-11f0-1d8d-d3dddde17a2e
 # ╠═70fe22ad-d8dc-4776-ba3b-a50399325484
 # ╠═9a1f6973-1363-4207-8a8f-713a47d253ce
-# ╠═e4495e22-4860-4a8a-8fd0-7c696b54a310
-# ╠═e40e3a60-e812-456d-affc-10bd3e072d21
 # ╠═d0fc8b98-37ca-4a26-8289-2b408846f7b6
 # ╠═f16a452c-fc3c-427d-8e43-bae5db10dddd
 # ╠═d7873320-cce3-478b-8fa7-93b1063eb0c4
+# ╠═3b6f10e2-41c2-4b5a-9e63-5c15b0f8e5a1
 # ╠═5a9f6a0a-9a6a-4d21-ae4b-67d122a2b2b3
 # ╠═fdbb52af-2e55-4a09-9b9b-7a0bdb9f4c67
 # ╠═4d7c7db1-9ed8-4c98-9d79-1c0a1a4fa07e
 # ╠═580a6ae6-5f95-4ec2-ab9d-b5f6d48d330b
 # ╠═730088b2-08f0-400b-98f2-5298ab5b9eb5
+# ╠═39a52a27-dd19-446e-9f43-520b170bac8c

@@ -4,7 +4,7 @@ using ..GatedLinearUnits: glu_mlp
 
 """
     CouplingLayer(dim, context_dim, hidden_dim, depth, affine;
-                  logscale_clamp=2.0, rng=Random.default_rng())
+                  logscale_clamp=2.0, rng=Random.default_rng(), flip=false)
 
 One coupling layer with a fixed random permutation and a GLU-MLP conditioner.
 
@@ -14,7 +14,9 @@ This layer implements either:
   with bounded `s = logscale_clamp * tanh(raw_s)`
 
 The input is first permuted with a fixed random permutation (sampled at construction),
-then split into `x_a` (pass-through) and `x_b` (transformed), then inverted permutation is applied.
+then split into `x_a` and `x_b`. By default (`flip=false`) the layer transforms `x_b` conditioned on
+`x_a`. With `flip=true` it uses the complementary mask: transforms `x_a` conditioned on `x_b`.
+In both cases the inverse permutation is applied at the end.
 
 # Arguments
 - `dim::Integer`: data dimension `D`.
@@ -26,6 +28,7 @@ then split into `x_a` (pass-through) and `x_b` (transformed), then inverted perm
 # Keyword Arguments
 - `logscale_clamp::Real=2.0`: scale for the `tanh`-bounded log-scale (affine only).
 - `rng::Random.AbstractRNG=Random.default_rng()`: RNG used to initialize the fixed random permutation.
+- `flip=false`: if `true`, use the complementary mask (transform `x_a` conditioned on `x_b`).
 """
 struct CouplingLayer{N}
     dim::Int
@@ -33,6 +36,7 @@ struct CouplingLayer{N}
     hidden_dim::Int
     depth::Int
     affine::Bool
+    flip::Bool
     logscale_clamp::Float32
     perm::Vector{Int}
     invperm::Vector{Int}
@@ -49,6 +53,7 @@ function CouplingLayer(dim::Integer,
                        depth::Integer,
                        affine::Bool;
                        logscale_clamp::Real=2.0,
+                       flip::Bool=false,
                        rng::Random.AbstractRNG=Random.default_rng())
     dim_int = Int(dim)
     ctx_int = Int(context_dim)
@@ -73,15 +78,21 @@ function CouplingLayer(dim::Integer,
         invperm[p] = i
     end
 
-    # Conditioner input is `[x_a; context]` and outputs parameters for `x_b`.
+    # Conditioner input and output depend on which half is transformed.
+    # flip=false: condition on x_a and output params for x_b
+    # flip=true:  condition on x_b and output params for x_a
     in_dim = split_a + ctx_int
     out_dim = affine ? (2 * split_b) : split_b
+    if flip
+        in_dim = split_b + ctx_int
+        out_dim = affine ? (2 * split_a) : split_a
+    end
 
     # Important: `zero_init=true` makes the layer start as (approximately) identity,
     # which stabilizes training and is common in flow initialization.
     net = glu_mlp(in_dim, hidden_int, out_dim; n_glu=depth_int, zero_init=true)
 
-    return CouplingLayer(dim_int, ctx_int, hidden_int, depth_int, affine,
+    return CouplingLayer(dim_int, ctx_int, hidden_int, depth_int, affine, flip,
                          Float32(logscale_clamp),
                          perm, invperm, split_a, split_b, net)
 end
@@ -92,7 +103,8 @@ function CouplingLayer(dim::Integer,
                        depth::Integer,
                        affine::Bool,
                        perm_in::AbstractVector{<:Integer};
-                       logscale_clamp::Real=2.0)
+                       logscale_clamp::Real=2.0,
+                       flip::Bool=false)
     dim_int = Int(dim)
     ctx_int = Int(context_dim)
     hidden_int = Int(hidden_dim)
@@ -119,9 +131,13 @@ function CouplingLayer(dim::Integer,
 
     in_dim = split_a + ctx_int
     out_dim = affine ? (2 * split_b) : split_b
+    if flip
+        in_dim = split_b + ctx_int
+        out_dim = affine ? (2 * split_a) : split_a
+    end
     net = glu_mlp(in_dim, hidden_int, out_dim; n_glu=depth_int, zero_init=true)
 
-    return CouplingLayer(dim_int, ctx_int, hidden_int, depth_int, affine,
+    return CouplingLayer(dim_int, ctx_int, hidden_int, depth_int, affine, flip,
                          Float32(logscale_clamp),
                          perm, invperm, split_a, split_b, net)
 end
@@ -164,33 +180,50 @@ function forward(layer::CouplingLayer, x::AbstractMatrix, context::AbstractMatri
     # tends to be brittle in Zygote; `getindex` is much more reliable.
     x_p = x32[layer.perm, :]
 
-    # 2) Split into conditioning part `a` and transformed part `b`.
+    # 2) Split into `a` and `b`.
     x_a = @view x_p[1:layer.split_a, :]
     x_b = @view x_p[(layer.split_a + 1):end, :]
 
-    # 3) Predict coupling parameters from `[x_a; context]`.
-    # Always concatenate (even if `context_dim == 0`) to keep shapes stable for AD.
-    # When `context_dim == 0`, `c32` is a `0×B` matrix and `vcat` is a no-op.
-    cond = vcat(x_a, c32)
-    params = layer.net(cond)
-
-    # 4) Apply coupling transform on `b`.
-    if layer.affine
-        raw_s = @view params[1:layer.split_b, :]
-        t = @view params[(layer.split_b + 1):end, :]
-        s = layer.logscale_clamp .* tanh.(raw_s)
-        y_b = x_b .* exp.(s) .+ t
-        # Log determinant is sum over transformed coordinates for each batch element.
-        logdet = vec(sum(s; dims=1))
-        y_p = vcat(x_a, y_b)
-        y = y_p[layer.invperm, :]
-        return y, Float32.(logdet)
+    if !layer.flip
+        # Base mask: transform `b` conditioned on `a` and context.
+        cond = vcat(x_a, c32)
+        params = layer.net(cond)
+        if layer.affine
+            raw_s = @view params[1:layer.split_b, :]
+            t = @view params[(layer.split_b + 1):end, :]
+            s = layer.logscale_clamp .* tanh.(raw_s)
+            y_b = x_b .* exp.(s) .+ t
+            logdet = vec(sum(s; dims=1))
+            y_p = vcat(x_a, y_b)
+            y = y_p[layer.invperm, :]
+            return y, Float32.(logdet)
+        else
+            t = params
+            y_b = x_b .+ t
+            y_p = vcat(x_a, y_b)
+            y = y_p[layer.invperm, :]
+            return y, zeros(Float32, B)
+        end
     else
-        t = params
-        y_b = x_b .+ t
-        y_p = vcat(x_a, y_b)
-        y = y_p[layer.invperm, :]
-        return y, zeros(Float32, B)
+        # Complementary mask: transform `a` conditioned on `b` and context.
+        cond = vcat(x_b, c32)
+        params = layer.net(cond)
+        if layer.affine
+            raw_s = @view params[1:layer.split_a, :]
+            t = @view params[(layer.split_a + 1):end, :]
+            s = layer.logscale_clamp .* tanh.(raw_s)
+            y_a = x_a .* exp.(s) .+ t
+            logdet = vec(sum(s; dims=1))
+            y_p = vcat(y_a, x_b)
+            y = y_p[layer.invperm, :]
+            return y, Float32.(logdet)
+        else
+            t = params
+            y_a = x_a .+ t
+            y_p = vcat(y_a, x_b)
+            y = y_p[layer.invperm, :]
+            return y, zeros(Float32, B)
+        end
     end
 end
 
@@ -219,24 +252,43 @@ function inverse(layer::CouplingLayer, z::AbstractMatrix, context::AbstractMatri
     z_a = @view z_p[1:layer.split_a, :]
     z_b = @view z_p[(layer.split_a + 1):end, :]
 
-    # 2) Predict parameters from `[z_a; context]` (see note in `forward`).
-    cond = vcat(z_a, c32)
-    params = layer.net(cond)
-
-    # 3) Invert coupling transform on `b`.
-    if layer.affine
-        raw_s = @view params[1:layer.split_b, :]
-        t = @view params[(layer.split_b + 1):end, :]
-        s = layer.logscale_clamp .* tanh.(raw_s)
-        x_b = (z_b .- t) .* exp.(-s)
-        x_p = vcat(z_a, x_b)
-        x = x_p[layer.invperm, :]
-        return x
+    if !layer.flip
+        # Base mask: invert `b` conditioned on `a` and context.
+        cond = vcat(z_a, c32)
+        params = layer.net(cond)
+        if layer.affine
+            raw_s = @view params[1:layer.split_b, :]
+            t = @view params[(layer.split_b + 1):end, :]
+            s = layer.logscale_clamp .* tanh.(raw_s)
+            x_b = (z_b .- t) .* exp.(-s)
+            x_p = vcat(z_a, x_b)
+            x = x_p[layer.invperm, :]
+            return x
+        else
+            t = params
+            x_b = z_b .- t
+            x_p = vcat(z_a, x_b)
+            x = x_p[layer.invperm, :]
+            return x
+        end
     else
-        t = params
-        x_b = z_b .- t
-        x_p = vcat(z_a, x_b)
-        x = x_p[layer.invperm, :]
-        return x
+        # Complementary mask: invert `a` conditioned on `b` and context.
+        cond = vcat(z_b, c32)
+        params = layer.net(cond)
+        if layer.affine
+            raw_s = @view params[1:layer.split_a, :]
+            t = @view params[(layer.split_a + 1):end, :]
+            s = layer.logscale_clamp .* tanh.(raw_s)
+            x_a = (z_a .- t) .* exp.(-s)
+            x_p = vcat(x_a, z_b)
+            x = x_p[layer.invperm, :]
+            return x
+        else
+            t = params
+            x_a = z_a .- t
+            x_p = vcat(x_a, z_b)
+            x = x_p[layer.invperm, :]
+            return x
+        end
     end
 end

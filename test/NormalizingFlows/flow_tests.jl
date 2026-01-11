@@ -9,7 +9,7 @@ using Flux
     C = 3
     B = 5
 
-    # 2 layers: one affine, one additive
+    # 2 spec columns -> 4 coupling sublayers (each column expands into two complementary masks)
     spec = [64 32;
             1  2;
             1  0]

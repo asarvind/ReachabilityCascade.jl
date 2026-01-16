@@ -14,137 +14,9 @@ using ..NormalizingFlows: NormalizingFlow
 
 export trajectory, optimize_latent, mpc
 
-struct LatentPolicy{F}
-    f::F
-    dim::Int
-end
+include("trajectory.jl")
 
-"""
-    trajectory(ds, model, x0, z, steps; kwargs...) -> state_trajectory
-
-Roll out a state trajectory by decoding one or more latent vectors into a control policy and
-simulating a discrete-time system.
-
-The decision variable `z` is a flat vector of length `latent_dim * length(steps)` where:
-- `latent_dim` is `model.dim`.
-- `steps` can be an integer `T` or a vector `[T₁, T₂, ...]`. When `steps` is a vector, each segment uses its own latent.
-
-Internally, the flat vector is interpreted as a matrix via:
-`zmat = reshape(z, latent_dim, length(steps))`.
-
-# Arguments
-- `ds`: [`DiscreteRandomSystem`](@ref).
-- `model`: either [`InvertibleCoupling`](@ref) or [`NormalizingFlow`](@ref).
-- `x0`: initial state vector.
-- `z`: flat latent vector.
-- `steps`: integer or vector of integers describing horizon splits.
-
-# Keyword Arguments
-- `u_len=nothing`: control dimension. If `nothing`, it is inferred as `length(center(ds.U))` when `ds` has a field `U`.
-  The decoded output is sliced to `u[1:u_len]`.
-
-# Returns
-- `state_trajectory`: state matrix `n×(1+sum(steps))` with the first column equal to `x0`.
-"""
-function trajectory(ds::DiscreteRandomSystem,
-                    model,
-                    x0,
-                    z,
-                    steps;
-                    u_len=nothing)
-    steps_vec = steps isa Integer ? [Int(steps)] : Int.(collect(steps))
-    length(steps_vec) >= 1 || throw(ArgumentError("steps must contain at least one segment"))
-
-    u_len_final = _infer_u_len(ds, u_len)
-
-    x0_vec = x0 isa AbstractVector ? x0 : vec(x0)
-    strj = reshape(x0_vec, :, 1)
-
-    z_flat = z isa AbstractVector ? z : vec(z)
-    zmat = reshape(z_flat, _latent_dim(model), length(steps_vec))
-
-    for i in 1:length(steps_vec)
-        t = steps_vec[i]
-        t >= 1 || throw(ArgumentError("each segment length must be ≥ 1; got steps[$i]=$t"))
-
-        κ = x -> control_from_latent(model, zmat[:, i], x; u_len=u_len_final)
-        x_start = strj[:, end]
-        seg = ds(x_start, κ, t)
-        strj = hcat(strj, seg[:, 2:end])
-    end
-
-    return strj
-end
-
-"""
-    trajectory(ds, model_decode, model_encode, x0, steps; kwargs...) -> state_trajectory
-
-Roll out a state trajectory where the control at each step is obtained by solving a latent
-optimization problem using two [`InvertibleCoupling`](@ref) networks.
-
-At each step with current state `x` as the context:
-1. Solve for `z` that minimizes `0.5*(‖z‖ + ‖encode(model_encode, decode(model_decode, z, x), x)‖)`.
-2. Apply `u = decode(model_decode, z, x)` (sliced to `u_len`) for one step.
-3. Warm-start the next step using the previous `z`.
-
-# Arguments
-- `ds`: [`DiscreteRandomSystem`](@ref).
-- `model_decode`: [`InvertibleCoupling`](@ref) used to decode latent to control.
-- `model_encode`: [`InvertibleCoupling`](@ref) used to re-encode the decoded control.
-- `x0`: initial state vector.
-- `steps`: rollout length. If an integer, runs for `steps` iterations. If a vector, runs for `sum(steps)`.
-
-# Keyword Arguments
-- `algo=:LN_BOBYQA`: NLopt algorithm symbol for the per-step latent optimization.
-- `init_z=nothing`: initial latent guess (defaults to zeros).
-- `max_time=Inf`: NLopt time cap (`maxtime`, seconds) per step.
-- `seed=rand(1:10000)`: NLopt seed passed to each per-step optimization call.
-- `norm_kind=:l1`: norm used in the objective (`:l1`, `:l2`, or `:linf`).
-- `u_len=nothing`: control dimension. If `nothing`, inferred as `length(center(ds.U))` when `ds` has a field `U`.
-
-# Returns
-- `state_trajectory`: state matrix `n×(1+steps_total)` with the first column equal to `x0`.
-"""
-function trajectory(ds::DiscreteRandomSystem,
-                    model_decode::InvertibleCoupling,
-                    model_encode::InvertibleCoupling,
-                    x0,
-                    steps;
-                    algo::Symbol=:LN_BOBYQA,
-                    init_z=nothing,
-                    max_time::Real=Inf,
-                    seed::Integer=rand(1:10000),
-                    norm_kind::Symbol=:l1,
-                    u_len=nothing)
-    steps_total = steps isa Integer ? Int(steps) : sum(Int.(collect(steps)))
-    steps_total >= 1 || throw(ArgumentError("steps must be ≥ 1 (or sum to ≥ 1)"))
-
-    u_len_final = _infer_u_len(ds, u_len)
-
-    D = _latent_dim(model_decode)
-    z = init_z === nothing ? zeros(Float32, D) : Float32.(init_z isa AbstractVector ? init_z : vec(init_z))
-    length(z) == D || throw(DimensionMismatch("init_z must have length $D; got length=$(length(z))"))
-
-    x0_vec = x0 isa AbstractVector ? x0 : vec(x0)
-    strj = reshape(x0_vec, :, 1)
-
-    for _ in 1:steps_total
-        x = strj[:, end]
-        res = InvertibleGame.decode(model_decode, model_encode, x;
-                                    algo=algo,
-                                    init_z=z,
-                                    max_time=max_time,
-                                    seed=seed,
-                                    norm_kind=norm_kind,
-                                    u_len=u_len_final,
-                                    return_meta=true)
-        z = res.z
-        x_next = ds(x, res.u)
-        strj = hcat(strj, x_next)
-    end
-
-    return strj
-end
+_nlopt_uses_grad(algo::Symbol) = occursin("D", String(algo))
 
 """
     optimize_latent(cost_fn, ds, x0, model, steps; kwargs...) -> result
@@ -160,7 +32,7 @@ Inside the objective, this is reinterpreted via `reshape` into multiple latent v
 - `cost_fn`: maps a trajectory to a cost (scalar/vector/matrix). It is scalarized with `sum`.
 - `ds`: [`DiscreteRandomSystem`](@ref).
 - `x0`: initial state vector.
-- `model`: either [`InvertibleCoupling`](@ref) or [`NormalizingFlow`](@ref).
+- `model`: either [`InvertibleCoupling`](@ref), [`NormalizingFlow`](@ref), or a function `model(x, z) -> u`.
 - `steps`: integer or vector of integers; see [`trajectory`](@ref).
 
 # Keyword Arguments
@@ -169,6 +41,8 @@ Inside the objective, this is reinterpreted via `reshape` into multiple latent v
 - `max_time=Inf`: NLopt `maxtime` (seconds).
 - `seed=rand(1:10000)`: NLopt RNG seed.
 - `u_len=nothing`: forwarded to [`trajectory`](@ref) to slice the decoded output.
+- `latent_dim=nothing`: required only when `model` is a function; specifies the latent dimension.
+- Derivative-based NLopt algorithms are not supported here; use derivative-free methods instead.
 
 # Returns
 Named tuple:
@@ -185,19 +59,36 @@ function optimize_latent(cost_fn,
                          init_z=nothing,
                          max_time::Real=Inf,
                          seed::Integer=rand(1:10000),
-                         u_len=nothing)
+                         u_len=nothing,
+                         latent_dim::Union{Nothing,Integer}=nothing)
     steps_vec = steps isa Integer ? [Int(steps)] : Int.(collect(steps))
     length(steps_vec) >= 1 || throw(ArgumentError("steps must contain at least one segment"))
 
     u_len_final = _infer_u_len(ds, u_len)
 
-    l = _latent_dim(model) * length(steps_vec)
+    model_eff = if model isa Function
+        latent_dim === nothing && throw(ArgumentError("latent_dim must be provided when model is a function"))
+        LatentPolicy(model, Int(latent_dim))
+    else
+        model
+    end
+
+    l = _latent_dim(model_eff) * length(steps_vec)
     init_z_vec = init_z === nothing ? zeros(Float32, l) : (init_z isa AbstractVector ? init_z : vec(init_z))
     length(init_z_vec) == l || throw(DimensionMismatch("init_z must have length $l; got length=$(length(init_z_vec))"))
 
-    function my_objective_fn(z::AbstractVector, grad::AbstractVector)
-        strj = trajectory(ds, model, x0, z, steps_vec; u_len=u_len_final)
+    use_grad = _nlopt_uses_grad(algo)
+    use_grad && throw(ArgumentError("Derivative-based NLopt algorithms are not supported; use a derivative-free algo."))
+
+    objective_scalar(z::AbstractVector) = begin
+        z32 = eltype(z) === Float32 ? z : Float32.(z)
+        res = trajectory(ds, model_eff, x0, z32, steps_vec; u_len=u_len_final)
+        strj = res.state_trajectory
         return sum(cost_fn(strj)) / size(strj, 2)
+    end
+
+    function my_objective_fn(z::AbstractVector, grad::AbstractVector)
+        return Float64(objective_scalar(z))
     end
 
     opt = NLopt.Opt(algo, l)
@@ -476,36 +367,6 @@ function mpc(cost_fn,
             candidate_objectives,
             candidate_zs,
             z=z_final)
-end
-
-# --- Model-specific latent -> control conversion ---
-
-_latent_dim(model) = getproperty(model, :dim)
-
-control_from_latent(policy::LatentPolicy, z, x; u_len) = begin
-    u = policy.f(x, z)
-    u_vec = u isa AbstractVector ? u : vec(u)
-    return u_vec[1:Int(u_len)]
-end
-
-control_from_latent(model::InvertibleCoupling, z, x; u_len) = begin
-    u = InvertibleGame.decode(model, z, x)
-    return u[1:Int(u_len)]
-end
-
-control_from_latent(model::NormalizingFlow, z, x; u_len) = begin
-    u = NormalizingFlows.decode(model, z, x)
-    return u[1:Int(u_len)]
-end
-
-_infer_u_len(ds::DiscreteRandomSystem, u_len) = begin
-    if u_len === nothing
-        hasproperty(ds, :U) || throw(ArgumentError("u_len must be provided when ds has no field U"))
-        return length(center(getproperty(ds, :U)))
-    end
-    u_len_i = Int(u_len)
-    u_len_i >= 1 || throw(ArgumentError("u_len must be ≥ 1; got $u_len"))
-    return u_len_i
 end
 
 end # module MPC

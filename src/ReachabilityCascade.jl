@@ -134,37 +134,4 @@ include("MPC/MPC.jl")
 using .MPC: trajectory, optimize_latent, mpc
 export trajectory, optimize_latent, mpc
 
-#############
-# Latent difference network
-#############
-module LatentDifferenceNetworks
-    import Flux
-    using Random
-    using JLD2
-    using ..GatedLinearUnits: glu_mlp
-    using ..SequenceTransform: SequenceTransformation
-    using ..ControlSystem: DiscreteRandomSystem
-    import ..TrainingAPI: save, load
-
-    include("LatentDifferenceNet/utils.jl")
-    include("LatentDifferenceNet/network.jl")
-    include("LatentDifferenceNet/io.jl")
-    include("LatentDifferenceNet/perturbation.jl")
-    include("LatentDifferenceNet/eval.jl")
-    include("LatentDifferenceNet/perturbation_training.jl")
-
-    export RefinementRNN, DeltaNetwork,
-           spsa_update!, testrun,
-           train_perturbation!, build_perturbation,
-           save, load
-end
-using .LatentDifferenceNetworks: RefinementRNN, DeltaNetwork,
-                                 spsa_update!, testrun,
-                                 train_perturbation!, build_perturbation,
-                                 save, load
-export RefinementRNN, DeltaNetwork,
-       spsa_update!, testrun,
-       train_perturbation!, build_perturbation,
-       save, load
-
 end

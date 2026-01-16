@@ -187,7 +187,10 @@ end
 # end
 
 """
-    (ds::DiscreteRandomSystem)(x::Vector{<:Real}, umat::Matrix{<:Real}, safety_fn::Function = x -> ones(length(x)))
+    (ds::DiscreteRandomSystem)(x::Vector{<:Real},
+                               umat::Matrix{<:Real},
+                               period::Union{Integer,AbstractVector}=1,
+                               safety_fn::Function = x -> ones(length(x)))
 
 Computes the state trajectory of a discrete-time system with randomized dynamics, given an initial state and a sequence of control inputs, **stopping early if safety is violated**.
 
@@ -198,12 +201,17 @@ If no `safety_fn` is provided, a trivial function returning all ones is used, me
 # Args
 - `x :: Vector{<:Real}` — initial state.
 - `umat :: Matrix{<:Real}` — sequence of control inputs as columns of a matrix.
+- `period :: Union{Integer,AbstractVector}` — number of discrete steps to hold each control input.
+  If a scalar, the same period is used for all columns. If a vector, its length must match `size(umat, 2)`.
 - `safety_fn :: Function` — function mapping a state vector to a vector of safety margins; state is safe iff all elements are `> 0` (default always returns positive values).
 
 # Returns
 - `Matrix{Float64}` — a matrix whose columns are the visited **safe** states; the first unsafe successor (if any) is **not** included.
 """
-function (ds::DiscreteRandomSystem)(x::Vector{<:Real}, umat::Matrix{<:Real}, safety_fn::Function = x -> ones(length(x)))
+function (ds::DiscreteRandomSystem)(x::Vector{<:Real},
+                                    umat::Matrix{<:Real},
+                                    period::Union{Integer,AbstractVector}=1,
+                                    safety_fn::Function = x -> ones(length(x)))
     # Ensure column matrix with the initial state
     xmat = reshape(Float64.(x), :, 1)
 
@@ -212,13 +220,24 @@ function (ds::DiscreteRandomSystem)(x::Vector{<:Real}, umat::Matrix{<:Real}, saf
         return xmat
     end
 
+    periods = if period isa Integer
+        fill(Int(period), size(umat, 2))
+    else
+        Int.(collect(period))
+    end
+    length(periods) == size(umat, 2) ||
+        throw(DimensionMismatch("period must have length size(umat, 2)=$(size(umat, 2)); got length=$(length(periods))"))
+    any(p -> p < 1, periods) && throw(ArgumentError("period values must be ≥ 1"))
+
     # Roll out controls, stopping at first violation
-    for u in eachcol(umat)
-        x_new = ds(xmat[:, end], Vector(u))
-        if all(safety_fn(x_new) .> 0)
-            xmat = hcat(xmat, x_new)
-        else
-            break
+    for (idx, u) in enumerate(eachcol(umat))
+        for _ in 1:periods[idx]
+            x_new = ds(xmat[:, end], Vector(u))
+            if all(safety_fn(x_new) .> 0)
+                xmat = hcat(xmat, x_new)
+            else
+                return xmat
+            end
         end
     end
 
@@ -265,4 +284,3 @@ function (ds::DiscreteRandomSystem)(x::Vector{<:Real}, κ::Function, steps::Inte
 
     return xmat
 end
-

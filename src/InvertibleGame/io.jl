@@ -140,58 +140,6 @@ function load_self(path::AbstractString)
     return model, (; losses, ema, ema_beta_start, ema_beta_final, ema_tau, ema_step)
 end
 
-"""
-    save_game(path, model_a, model_b; kwargs...)
-
-Save a two-network InvertibleGame checkpoint (both models in one `.jld2` file).
-
-This is a convenience wrapper around the same `Flux.state` + constructor `(args, kwargs)` pattern used
-by `TrainingAPI.save`/`TrainingAPI.load`, but for a *pair* of models.
-
-# Arguments
-- `path`: output path (typically `.jld2`).
-- `model_a`: first [`InvertibleCoupling`](@ref).
-- `model_b`: second [`InvertibleCoupling`](@ref).
-
-# Keyword Arguments
-- `losses_a=nothing`: optional loss trace for `model_a`.
-- `losses_b=nothing`: optional loss trace for `model_b`.
-- `ema_a=nothing`: optional EMA copy of `model_a` (same architecture).
-- `ema_b=nothing`: optional EMA copy of `model_b` (same architecture).
-- `ema_beta_start=nothing`: optional EMA schedule start value.
-- `ema_beta_final=nothing`: optional EMA schedule final value.
-- `ema_tau=nothing`: optional EMA schedule time constant (in optimizer steps).
-- `ema_step=nothing`: optional EMA update step counter.
-
-# Returns
-- `path`: the same path string.
-"""
-function save_game(path::AbstractString,
-                   model_a::InvertibleCoupling,
-                   model_b::InvertibleCoupling;
-                   losses_a::Union{Nothing,AbstractVector{<:Real}}=nothing,
-                   losses_b::Union{Nothing,AbstractVector{<:Real}}=nothing,
-                   ema_a::Union{Nothing,InvertibleCoupling}=nothing,
-                   ema_b::Union{Nothing,InvertibleCoupling}=nothing,
-                   ema_beta_start::Union{Nothing,Real}=nothing,
-                   ema_beta_final::Union{Nothing,Real}=nothing,
-                   ema_tau::Union{Nothing,Real}=nothing,
-                   ema_step::Union{Nothing,Integer}=nothing)
-    state_a = Flux.state(model_a)
-    args_a, kwargs_a = _coupling_constructor(model_a)
-    state_b = Flux.state(model_b)
-    args_b, kwargs_b = _coupling_constructor(model_b)
-
-    state_ema_a = ema_a === nothing ? nothing : Flux.state(ema_a)
-    state_ema_b = ema_b === nothing ? nothing : Flux.state(ema_b)
-    jldsave(path;
-            state_a, args_a, kwargs_a, losses_a,
-            state_b, args_b, kwargs_b, losses_b,
-            state_ema_a, state_ema_b,
-            ema_beta_start, ema_beta_final, ema_tau, ema_step)
-    return path
-end
-
 _construct_coupling(args, kwargs) = begin
     if kwargs isa NamedTuple
         return InvertibleCoupling(args...; kwargs...)
@@ -203,59 +151,4 @@ _construct_coupling(args, kwargs) = begin
     else
         throw(ArgumentError("checkpoint 'kwargs' must be a NamedTuple or Dict; got $(typeof(kwargs))"))
     end
-end
-
-"""
-    load_game(path) -> (model_a, model_b, meta)
-
-Load a two-network InvertibleGame checkpoint saved by [`save_game`](@ref).
-
-# Arguments
-- `path`: checkpoint path.
-
-# Returns
-- `model_a::InvertibleCoupling`
-- `model_b::InvertibleCoupling`
-- `meta::NamedTuple`: `(; losses_a, losses_b, ema_a, ema_b, ema_beta_start, ema_beta_final, ema_tau, ema_step)`
-"""
-function load_game(path::AbstractString)
-    data = JLD2.load(path)
-    model_a = _construct_coupling(data["args_a"], data["kwargs_a"])
-    Flux.loadmodel!(model_a, data["state_a"])
-
-    model_b = _construct_coupling(data["args_b"], data["kwargs_b"])
-    Flux.loadmodel!(model_b, data["state_b"])
-
-    losses_a = haskey(data, "losses_a") ? data["losses_a"] : nothing
-    losses_b = haskey(data, "losses_b") ? data["losses_b"] : nothing
-
-    ema_a = if haskey(data, "state_ema_a") && !(data["state_ema_a"] === nothing)
-        m = _construct_coupling(data["args_a"], data["kwargs_a"])
-        Flux.loadmodel!(m, data["state_ema_a"])
-        m
-    else
-        nothing
-    end
-    ema_b = if haskey(data, "state_ema_b") && !(data["state_ema_b"] === nothing)
-        m = _construct_coupling(data["args_b"], data["kwargs_b"])
-        Flux.loadmodel!(m, data["state_ema_b"])
-        m
-    else
-        nothing
-    end
-    ema_beta_start = haskey(data, "ema_beta_start") ? data["ema_beta_start"] : nothing
-    ema_beta_final = haskey(data, "ema_beta_final") ? data["ema_beta_final"] : nothing
-    ema_tau = haskey(data, "ema_tau") ? data["ema_tau"] : nothing
-    ema_step = haskey(data, "ema_step") ? data["ema_step"] : nothing
-
-    # Backward compatibility: older checkpoints saved a constant `ema_beta`.
-    if ema_beta_start === nothing && haskey(data, "ema_beta")
-        β = data["ema_beta"]
-        ema_beta_start = β
-        ema_beta_final = β
-        ema_tau = 1.0
-        ema_step = 0
-    end
-
-    return model_a, model_b, (; losses_a, losses_b, ema_a, ema_b, ema_beta_start, ema_beta_final, ema_tau, ema_step)
 end

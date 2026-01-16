@@ -9,48 +9,39 @@ import ..TrainingAPI: gradient
     gradient(model, other, x_true, context; kwargs...) -> (grads, loss)
     gradient(model, other, x_true, context; kwargs...) -> (grads, loss, extras)
 
-Compute gradients for an *adversarial* two-network game update for **one** network `model`,
-with the other network `other` treated as fixed.
+Compute gradients for a single-network update where `other` is treated as fixed
+(typically an EMA copy used to generate fake samples).
 
-This defines a single scalar loss for `model` as the sum of three objectives:
-
+This defines a scalar loss for `model` as the sum of:
 1. **Accept true** (pull true samples inside the box in `model`'s latent space):
    `relu(‖encode(model, x_true, c)‖ - 1 + margin_true)`
-2. **Reject other** (push fakes from `other` outside the box in `model`'s latent space):
+2. **Reject fakes** (push EMA-generated samples outside the box in `model`'s latent space):
    `relu(1 - ‖encode(model, decode(other, z_other, c), c)‖ + margin_adv)`
-3. **Fool other** (generate fakes that appear inside the box to `other`):
-   `relu(‖encode(other, decode(model, z_self, c), c)‖ - 1 + margin_adv)`
-
-The total loss is the mean over the batch of each term, summed.
-
-Important: this method returns gradients **only for `model`**. You call it twice per step
-to get one update for each network (A vs B, and B vs A).
 
 # Arguments
 - `model`: the network being updated.
-- `other`: the opponent network, treated as fixed during this gradient computation.
+- `other`: fixed network used to generate fake samples (e.g., EMA copy).
 - `x_true`: true sample(s) (`D` vector or `D×B` matrix).
 - `context`: context (`C` vector or `C×B` matrix), matching the shape of `x_true`.
 
 # Keyword Arguments
 - `margin_true=0.5`: margin used for the true-sample inclusion hinge.
-- `margin_adv=0.0`: margin used for both adversarial hinges (rejecting opponent samples and fooling the opponent).
+- `margin_adv=0.0`: margin used for the fake rejection hinge.
 - `w_true=1.0`: weight on the true-sample inclusion loss.
-- `w_reject=1.0`: weight on the "reject other" loss.
-- `w_fool=1.0`: weight on the "fool other" loss.
+- `w_reject=1.0`: weight on the fake rejection loss.
 - `mode=:sum`: gradient mode:
   - `:sum` (default): one gradient for the full weighted sum loss.
   - `:orthogonal_adv`: compute two gradients: `g_true = ∇(w_true*accept_true)` and
-    `g_adv_orth = ∇(w_reject*reject_other + w_fool*fool_other)` with the component along `g_true`
+    `g_adv_orth = ∇(w_reject*reject_fake)` with the component along `g_true`
     removed (global projection), returning `(g_true, g_adv_orth)`.
 - `norm_kind=:l1`: norm used in the hinge losses (`:l1`, `:l2`, or `:linf`).
-- `rng=Random.default_rng()`: RNG used to sample `z_self` and `z_other`.
-- `latent_radius_min=0.0`: minimum radius in `[0, 1]` for sampled fake latents (`z_self`, `z_other`).
+- `rng=Random.default_rng()`: RNG used to sample `z_other`.
+- `latent_radius_min=0.0`: minimum radius in `[0, 1]` for sampled fake latents.
 - `return_loss=false`: if `true`, also returns the scalar loss (and optional extras).
 - `return_true_hinges=false`: if `true`, include per-sample true hinge losses in `extras.true_hinges` and
   the corresponding per-sample true norms in `extras.true_norms`.
 - `return_components=false`: if `true`, include scalar components in `extras`:
-  `extras.accept_true`, `extras.reject_other`, `extras.fool_other`.
+  `extras.accept_true`, `extras.reject_fake`.
 
 # Returns
 - If `return_loss=false`: `grads` for `model`.
@@ -108,7 +99,6 @@ function gradient(model::InvertibleCoupling,
                   margin_adv::Real=0.0,
                   w_true::Real=1.0,
                   w_reject::Real=1.0,
-                  w_fool::Real=1.0,
                   mode::Symbol=:sum,
                   norm_kind::Symbol=:l1,
                   rng=Random.default_rng(),
@@ -130,15 +120,12 @@ function gradient(model::InvertibleCoupling,
     margin_adv32 = Float32(margin_adv)
     w_true32 = Float32(w_true)
     w_reject32 = Float32(w_reject)
-    w_fool32 = Float32(w_fool)
     D = model.dim
     B = size(x_true32, 2)
 
     needs_reject = w_reject32 != 0f0
-    needs_fool = w_fool32 != 0f0
 
     # Pre-sample latents outside the AD scope (keeps the gradient scope deterministic and avoids RNG mutation in AD).
-    z_self = needs_fool ? sample_latent(rng, D, B; norm_kind=norm_kind, radius_min=latent_radius_min) : nothing
     z_other = needs_reject ? sample_latent(rng, D, B; norm_kind=norm_kind, radius_min=latent_radius_min) : nothing
 
     # Precompute opponent fakes for the "reject other" term. This does not depend on `model`,
@@ -148,7 +135,6 @@ function gradient(model::InvertibleCoupling,
     loss_ref = Ref{Float32}(0f0)
     accept_true_ref = Ref{Float32}(0f0)
     reject_other_ref = Ref{Float32}(0f0)
-    fool_other_ref = Ref{Float32}(0f0)
     true_hinges_ref = Ref{Vector{Float32}}(Float32[])
     true_norms_ref = Ref{Vector{Float32}}(Float32[])
 
@@ -166,17 +152,7 @@ function gradient(model::InvertibleCoupling,
             n_other_seen = _batch_norm(z_other_seen, norm_kind)
             reject_other = mean(Flux.relu.(1f0 .- n_other_seen .+ margin_adv32))
         end
-
-        fool_other = 0f0
-        if needs_fool
-            # 3) Fool other: generate fakes with `m`, then encode them with `other`.
-            x_fake_from_self = decode(m, z_self, c32)
-            z_seen_by_other = encode(other, x_fake_from_self, c32)
-            n_seen_by_other = _batch_norm(z_seen_by_other, norm_kind)
-            fool_other = mean(Flux.relu.(n_seen_by_other .- 1f0 .+ margin_adv32))
-        end
-
-        return accept_true, reject_other, fool_other, true_hinges, n_true
+        return accept_true, reject_other, true_hinges, n_true
     end
 
     if !(mode === :sum || mode === :orthogonal_adv)
@@ -184,28 +160,27 @@ function gradient(model::InvertibleCoupling,
     end
 
     # Always compute scalar components once for consistent logging and extras.
-    accept_true0, reject_other0, fool_other0, true_hinges0, n_true0 = compute_components(model)
-    loss0 = w_true32 * accept_true0 + w_reject32 * reject_other0 + w_fool32 * fool_other0
+    accept_true0, reject_other0, true_hinges0, n_true0 = compute_components(model)
+    loss0 = w_true32 * accept_true0 + w_reject32 * reject_other0
     loss_ref[] = Float32(loss0)
     accept_true_ref[] = Float32(accept_true0)
     reject_other_ref[] = Float32(reject_other0)
-    fool_other_ref[] = Float32(fool_other0)
     true_hinges_ref[] = Float32.(true_hinges0)
     true_norms_ref[] = Float32.(n_true0)
 
     grads = if mode === :sum
         Flux.gradient(model) do m
-            accept_true, reject_other, fool_other, _, _ = compute_components(m)
-            return w_true32 * accept_true + w_reject32 * reject_other + w_fool32 * fool_other
+            accept_true, reject_other, _, _ = compute_components(m)
+            return w_true32 * accept_true + w_reject32 * reject_other
         end
     else
         grads_true = Flux.gradient(model) do m
-            accept_true, _, _, _, _ = compute_components(m)
+            accept_true, _, _, _ = compute_components(m)
             return w_true32 * accept_true
         end
         grads_adv = Flux.gradient(model) do m
-            _, reject_other, fool_other, _, _ = compute_components(m)
-            return w_reject32 * reject_other + w_fool32 * fool_other
+            _, reject_other, _, _ = compute_components(m)
+            return w_reject32 * reject_other
         end
         g_true = grads_true[1]
         g_adv = grads_adv[1]
@@ -227,8 +202,7 @@ function gradient(model::InvertibleCoupling,
     end
     if return_components
         extras = Base.merge(extras, (; accept_true=accept_true_ref[],
-                                      reject_other=reject_other_ref[],
-                                      fool_other=fool_other_ref[]))
+                                      reject_fake=reject_other_ref[]))
     end
     return grads[1], loss_ref[], extras
 end
@@ -241,7 +215,6 @@ function gradient(model::InvertibleCoupling,
                   margin_adv::Real=0.0,
                   w_true::Real=1.0,
                   w_reject::Real=1.0,
-                  w_fool::Real=1.0,
                   mode::Symbol=:sum,
                   norm_kind::Symbol=:l1,
                   rng=Random.default_rng(),
@@ -258,7 +231,6 @@ function gradient(model::InvertibleCoupling,
                     margin_adv=margin_adv,
                     w_true=w_true,
                     w_reject=w_reject,
-                    w_fool=w_fool,
                     mode=mode,
                     norm_kind=norm_kind,
                     rng=rng,

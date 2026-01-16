@@ -24,16 +24,15 @@ end
 		
 		using Random, LinearAlgebra
 		import NLopt
-		using Flux
+		using Flux, Enzyme
 		import JLD2
 		import LazySets
 		import LazySets: center, radius_hyperrectangle
 		import ReachabilityCascade.CarDynamics: discrete_vehicles
 		import ReachabilityCascade: DiscreteRandomSystem, InvertibleCoupling, NormalizingFlow, load
-		import ReachabilityCascade.InvertibleGame: inclusion_losses, load_game, decode, load_self
+		import ReachabilityCascade.InvertibleGame: inclusion_losses, decode, load_self
 		import ReachabilityCascade: trajectory, optimize_latent, mpc
 		import ReachabilityCascade.TrainingAPI: build
-		
 	end
 	
 
@@ -174,10 +173,9 @@ let
 	margin_adv = 0.0
 
 	# Quick switch for "inclusion-only" training:
-	# set `w_reject = 0.0` and `w_fool = 0.0` (keep `w_true = 1.0`).
+	# set `w_reject = 0.0` (keep `w_true = 1.0`).
 	w_true = 1.0
 	w_reject = 1.0
-	w_fool = 1.0
 
 	# ----------------------------
 	# Training args (edit these)
@@ -208,65 +206,32 @@ let
 	thisdata = overtake_data[1:end]
 	it_game = CarFlowIterator(thisdata; rng=Random.MersenneTwister(0))
 
-	# Set `mode=:game` (two-player) or `mode=:self` (single-network, EMA provides fakes).
-	mode = :self
-
-	if mode == :game
-		# Two-player symmetric training: each network both fools and rejects the other.
-		model_a, model_b, losses_a, losses_b = build(InvertibleCoupling, it_game;
-			spec=spec,
-			logscale_clamp=logscale_clamp,
-			margin_true=margin_true,
-			margin_adv=margin_adv,
-			w_true=w_true,
-			w_reject=w_reject,
-			w_fool=w_fool,
-			epochs=epochs,
-			batch_size=batch_size,
-			opt=opt,
-			use_memory=use_memory,
-			latent_radius_min=latent_radius_min,
-			ema_beta_start=ema_beta_start,
-			ema_beta_final=ema_beta_final,
-			ema_tau=ema_tau,
-			grad_mode=grad_mode,
-			norm_kind=norm_kind,
-			save_path=save_path,
-			load_path=load_path,
-			save_period=save_period,
-			rng=Random.MersenneTwister(1),      # latent sampling RNG
-			rng_a=Random.MersenneTwister(2),    # model A init RNG (permutations/weights)
-			rng_b=Random.MersenneTwister(3),    # model B init RNG (permutations/weights)
-		)
-		(; losses_a, losses_b)
-	else
-		save_path_self = replace(save_path, "invertiblegame" => "invertiblegame_self")
-		load_path_self = save_path_self
-		model, ema, losses = build(InvertibleCoupling, it_game, :self;
-			spec=spec,
-			logscale_clamp=logscale_clamp,
-			margin_true=margin_true,
-			margin_adv=margin_adv,
-			w_true=w_true,
-			w_reject=w_reject,
-			epochs=epochs,
-			batch_size=batch_size,
-			opt=opt,
-			use_memory=use_memory,
-			latent_radius_min=latent_radius_min,
-			ema_beta_start=ema_beta_start,
-			ema_beta_final=ema_beta_final,
-			ema_tau=ema_tau,
-			grad_mode=grad_mode,
-			norm_kind=norm_kind,
-			save_path=save_path_self,
-			load_path=load_path_self,
-			save_period=save_period,
-			rng=Random.MersenneTwister(1),       # latent sampling RNG
-			rng_model=Random.MersenneTwister(200), # model init RNG
-		)
-		(; losses, model, ema)
-	end
+	save_path_self = replace(save_path, "invertiblegame" => "invertiblegame_self")
+	load_path_self = save_path_self
+	model, ema, losses = build(InvertibleCoupling, it_game;
+		spec=spec,
+		logscale_clamp=logscale_clamp,
+		margin_true=margin_true,
+		margin_adv=margin_adv,
+		w_true=w_true,
+		w_reject=w_reject,
+		epochs=epochs,
+		batch_size=batch_size,
+		opt=opt,
+		use_memory=use_memory,
+		latent_radius_min=latent_radius_min,
+		ema_beta_start=ema_beta_start,
+		ema_beta_final=ema_beta_final,
+		ema_tau=ema_tau,
+		grad_mode=grad_mode,
+		norm_kind=norm_kind,
+		save_path=save_path_self,
+		load_path=load_path_self,
+		save_period=save_period,
+		rng=Random.MersenneTwister(1),       # latent sampling RNG
+		rng_model=Random.MersenneTwister(200), # model init RNG
+	)
+	(; losses, model, ema)
 		
 end
 
@@ -413,7 +378,7 @@ let
 
 	save_path = "data/car/selfadversarial.jld2"
 
-	model_a, model_b, _ = load_game(save_path)
+	model_a, _ = load_self(save_path)
 
 	# Test-time settings (local to this cell).
 	margin_true_test = 1.0
@@ -428,9 +393,8 @@ let
 	it_test = CarFlowSequentialIterator(thisdata_test)
 
 	losses_a_inclusion = inclusion_losses(model_a, it_test; batch_size=batch_size_test, margin_true=margin_true_test, norm_kind=:l1)
-	losses_b_inclusion = inclusion_losses(model_b, it_test; batch_size=batch_size_test, margin_true=margin_true_test, norm_kind=:l1)
 
-	(; losses_a_inclusion, losses_b_inclusion)
+	(; losses_a_inclusion)
 end
 
 # ╔═╡ 580a6ae6-5f95-4ec2-ab9d-b5f6d48d330b
@@ -510,36 +474,85 @@ let
 
 
 	algo = :LN_COBYLA
-	max_time = 0.02
-	drift_steps = 2
+	
+	drift_steps = 3
 
-	num_sim = 10
+	num_sim = 1000
 
 	noise_rng = MersenneTwister(200)
 
-	cost_res = Vector{Float64}[]
+	cost_res = []
 
 	data_shuffled = shuffle(noise_rng, overtake_data)
 
+	save_res_path = "data/car/temp/resSeed200.jld2"
+
+	# max_time = 0.02
+	# opt_steps = [20]
+
+	start_time = time()
 	for i in 1:num_sim 
+		max_time = rand(noise_rng, [0.02, 0.04, 0.08])
+		opt_steps = rand(noise_rng, [[20], [10, 10], [5, 5, 5, 5]])
+		
+		
 		strj, utrj = data_shuffled[i]
 		x0 = strj[:, 1]
 		
-		res_drift = mpc(thiscost, ds, x0, model_flow, drift_steps; algo=algo, max_time=max_time, noise_weight=0.2, noise_rng=noise_rng, opt_steps=[28], opt_seed=1)
+		res_drift = mpc(thiscost, ds, x0, model_flow, drift_steps; algo=algo, max_time=max_time, noise_weight=0.2, noise_rng=noise_rng, opt_steps=opt_steps, opt_seed=1)
 		x_drift = res_drift.trajectory[:, drift_steps]
 
-		res_invunit = mpc(thiscost, ds, x_drift, model_invunit, 20; algo=algo, max_time=max_time, noise_weight=0.0, opt_steps=[28], opt_seed=1)
+		init_strj, init_utrj = trajectory(ds, model_invunit, x_drift, repeat(zeros(Float32, 2),length(opt_steps)), opt_steps)
+
+		res_invunit = mpc(thiscost, ds, x_drift, model_invunit, 20; algo=algo, max_time=max_time, noise_weight=0.0, opt_steps=opt_steps, opt_seed=1)
+
+		res_invunit_long = mpc(thiscost, ds, x_drift, model_invunit, 20; algo=algo, max_time=max_time, noise_weight=0.0, opt_steps=repeat([1], sum(opt_steps)), opt_seed=1)
 		
-		res_flow = mpc(thiscost, ds, x_drift, model_flow, 28; algo=algo, max_time=max_time, noise_weight=0.0, opt_steps=[28], opt_seed=1)
+		res_flow = mpc(thiscost, ds, x_drift, model_flow, 28; algo=algo, max_time=max_time, noise_weight=0.0, opt_steps=opt_steps, init_z = randn(noise_rng, Float32, length(opt_steps)*2), opt_seed=1)
 
-		res_id_stair = mpc(thiscost, ds, x_drift, (x, z)->z, 28; algo=algo, max_time=max_time, noise_weight=0.0, opt_steps=[28], opt_seed=1, latent_dim = 2)
+		res_flow_zero = mpc(thiscost, ds, x_drift, model_flow, 28; algo=algo, max_time=max_time, noise_weight=0.0, opt_steps=opt_steps, init_z = repeat(zeros(Float32, 2), length(opt_steps)), opt_seed=1)
 
-		res_id_full = mpc(thiscost, ds, x_drift, (x, z)->z, 28; algo=algo, max_time=max_time, noise_weight=0.0, opt_steps=repeat([1], 28), opt_seed=1,  latent_dim=2)
 
-		push!(cost_res, [res_invunit.total_cost, res_flow.total_cost, res_id_stair.total_cost, res_id_full.total_cost])
+
+		res_id_stair = mpc(thiscost, ds, x_drift, (x, z)->z, 28; algo=algo, max_time=max_time, noise_weight=0.0, opt_steps=opt_steps, init_z = vec(init_utrj[:, 1:length(opt_steps)]), opt_seed=1, latent_dim = 2)
+
+		res_id_full = mpc(thiscost, ds, x_drift, (x, z)->z, 28; algo=algo, max_time=max_time, noise_weight=0.0, opt_steps=repeat([1], sum(opt_steps)), init_z = vec(init_utrj), opt_seed=1,  latent_dim=2)
+
+		
+
+		# res_invunit = optimize_latent(thiscost, ds, x_drift, model_invunit, [28]; init_z=zeros(2), algo=algo, max_time=max_time)		
+
+		# res_id_full = optimize_latent(thiscost, ds, x_drift, (x, z)->z, fill(1, sum(opt_steps)); init_z=vec(init_utrj), algo=algo, latent_dim=2, max_time=max_time)
+
+		push!(cost_res, 
+			  (norm_cost=res_invunit.total_cost, 
+			   norm_long_cost=res_invunit_long.total_cost,
+			   flow_rand_cost=res_flow.total_cost, 
+			   flow_zero_cost=res_flow_zero.total_cost, 
+			   basic_cost=res_id_stair.total_cost, 
+			   basic_long_cost=res_id_full.total_cost,
+			   max_time=max_time,
+			  opt_steps=opt_steps
+						)
+			 )
+
+		time_now = time()
+		if time_now - start_time > 60
+			start_time = time_now
+			JLD2.save(save_res_path, "result", cost_res)
+		end
+		# push!(cost_res, [res_invunit.objective, res_id_full.objective])
 	end
 
+	JLD2.save(save_res_path, "result", cost_res)
 	cost_res
+
+	
+end
+
+# ╔═╡ f13bbc63-4fd3-4ac9-a68d-238aaac9e4dc
+let
+	JLD2.load("data/car/temp/resSeed200.jld2", "result")
 end
 
 # ╔═╡ Cell order:
@@ -556,3 +569,4 @@ end
 # ╠═580a6ae6-5f95-4ec2-ab9d-b5f6d48d330b
 # ╠═730088b2-08f0-400b-98f2-5298ab5b9eb5
 # ╠═39a52a27-dd19-446e-9f43-520b170bac8c
+# ╠═f13bbc63-4fd3-4ac9-a68d-238aaac9e4dc

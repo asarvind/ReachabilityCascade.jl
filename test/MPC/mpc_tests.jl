@@ -77,7 +77,7 @@ end
     @test length(res.z) == 1
 end
 
-@testset "trajectory state_jocobians" begin
+@testset "trajectory output_jacobians" begin
     X = Hyperrectangle(zeros(1), ones(1))
     U = Hyperrectangle(zeros(1), ones(1))
     ds = ReachabilityCascade.DiscreteRandomSystem(X, U, (x, u) -> x .+ u)
@@ -90,16 +90,16 @@ end
                                          u_len=1,
                                          jacobian_times=[1, 2, 3])
 
-    @test size(res.state_trajectory) == (1, 3)
+    @test size(res.output_trajectory) == (1, 3)
     @test size(res.input_trajectory) == (1, 2)
-    @test length(res.state_jocobians) == 3
-    @test size(res.state_jocobians[1]) == (1, 1)
-    @test isapprox(res.state_jocobians[1][1, 1], 0.0; atol=1e-6)
-    @test isapprox(res.state_jocobians[2][1, 1], 1.0; atol=5e-3)
-    @test isapprox(res.state_jocobians[3][1, 1], 2.0; atol=5e-3)
+    @test length(res.output_jacobians) == 3
+    @test size(res.output_jacobians[1]) == (1, 1)
+    @test isapprox(res.output_jacobians[1][1, 1], 0.0; atol=1e-6)
+    @test isapprox(res.output_jacobians[2][1, 1], 1.0; atol=5e-3)
+    @test isapprox(res.output_jacobians[3][1, 1], 2.0; atol=5e-3)
 end
 
-@testset "trajectory state_jocobians (two-model)" begin
+@testset "trajectory output_jacobians (two-model)" begin
     X = Hyperrectangle(zeros(1), ones(1))
     U = Hyperrectangle(zeros(1), ones(1))
     ds = ReachabilityCascade.DiscreteRandomSystem(X, U, (x, u) -> x .+ u)
@@ -114,8 +114,112 @@ end
                                          u_len=1,
                                          jacobian_times=[1, 2])
 
-    @test size(res.state_trajectory, 1) == 1
+    @test size(res.output_trajectory, 1) == 1
     @test size(res.input_trajectory) == (1, 1)
-    @test length(res.state_jocobians) == 2
-    @test size(res.state_jocobians[1]) == (1, 2)
+    @test length(res.output_jacobians) == 2
+    @test size(res.output_jacobians[1]) == (1, 2)
+end
+
+@testset "smt_latent feasibility" begin
+    X = Hyperrectangle(zeros(1), ones(1))
+    U = Hyperrectangle(zeros(1), ones(1))
+    ds = ReachabilityCascade.DiscreteRandomSystem(X, U, (x, u) -> x .+ u)
+
+    model = DummyModel(1)
+    x0 = [0.0]
+    z0 = Float32[0.0]
+
+    # Safety at time 1: x <= -0.5  => [1, 0.5] * [x; 1] <= 0
+    safety = [Float64[1.0 0.5]]
+    # Terminal at time 2: x <= -0.5
+    terminal = [Float64[1.0 0.5]]
+
+    z, info = ReachabilityCascade.MPC.smt_latent(
+        ds,
+        x0,
+        model,
+        z0,
+        2,
+        safety,
+        terminal,
+        [1],
+        nothing;
+        big_m=10.0,
+    )
+
+    @test info.feasible
+    @test z isa AbstractVector
+    @test z[1] <= -0.5 + 1e-3
+end
+
+@testset "smt_critical_evaluations default input bounds" begin
+    X = Hyperrectangle(zeros(1), ones(1))
+    U = Hyperrectangle(zeros(2), ones(2))
+    ds = ReachabilityCascade.DiscreteRandomSystem(X, U, (x, u) -> x .+ u[1])
+
+    model = DummyModel(2)
+    x0 = [0.0]
+    z = Float32[0.1, -0.1]
+
+    safety_output = [Float64[1.0 0.0]]
+    terminal_output = [Float64[-1.0 0.0]]
+
+    res = ReachabilityCascade.MPC.smt_critical_evaluations(
+        ds,
+        model,
+        x0,
+        z,
+        2,
+        safety_output,
+        terminal_output;
+        u_len=2,
+    )
+
+    @test length(res.safety_output) == 1
+    @test length(res.safety_input) == 4
+    @test length(res.terminal_output) == 1
+    @test length(res.safety_input[1]) == 1
+end
+
+@testset "smt_affine_critical matches base at z_ref" begin
+    X = Hyperrectangle(zeros(1), ones(1))
+    U = Hyperrectangle(zeros(1), ones(1))
+    ds = ReachabilityCascade.DiscreteRandomSystem(X, U, (x, u) -> x .+ u[1])
+
+    model = DummyModel(1)
+    x0 = [0.0]
+    z_ref = Float32[0.2]
+
+    safety_output = [Float64[1.0 0.0]]
+    safety_input = [Float64[1.0 0.0]]
+    terminal_output = [Float64[-1.0 0.0]]
+
+    base = ReachabilityCascade.MPC.smt_critical_evaluations(
+        ds,
+        model,
+        x0,
+        z_ref,
+        2,
+        safety_output,
+        safety_input,
+        terminal_output;
+        u_len=1,
+    )
+
+    affine = ReachabilityCascade.MPC.smt_affine_critical(
+        ds,
+        model,
+        x0,
+        z_ref,
+        2,
+        safety_output,
+        safety_input,
+        terminal_output;
+        u_len=1,
+        eps=1f-6,
+    )
+
+    @test affine.safety_output[1][1, end] ≈ base.safety_output[1][1]
+    @test affine.safety_input[1][1, end] ≈ base.safety_input[1][1]
+    @test affine.terminal_output[1][1, end] ≈ base.terminal_output[1][1]
 end

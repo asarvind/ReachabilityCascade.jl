@@ -12,9 +12,11 @@ import ..NormalizingFlows
 using ..InvertibleGame: InvertibleCoupling
 using ..NormalizingFlows: NormalizingFlow
 
-export trajectory, optimize_latent, mpc
+export trajectory, optimize_latent, mpc, smt_critical_evaluations
 
 include("trajectory.jl")
+include("smt.jl")
+include("smt_critical.jl")
 
 _nlopt_uses_grad(algo::Symbol) = occursin("D", String(algo))
 
@@ -41,6 +43,7 @@ Inside the objective, this is reinterpreted via `reshape` into multiple latent v
 - `max_time=Inf`: NLopt `maxtime` (seconds).
 - `seed=rand(1:10000)`: NLopt RNG seed.
 - `u_len=nothing`: forwarded to [`trajectory`](@ref) to slice the decoded output.
+- `output_map=identity`: forwarded to [`trajectory`](@ref) to map state vectors to outputs.
 - `latent_dim=nothing`: required only when `model` is a function; specifies the latent dimension.
 - Derivative-based NLopt algorithms are not supported here; use derivative-free methods instead.
 
@@ -60,6 +63,7 @@ function optimize_latent(cost_fn,
                          max_time::Real=Inf,
                          seed::Integer=rand(1:10000),
                          u_len=nothing,
+                         output_map::Function=identity,
                          latent_dim::Union{Nothing,Integer}=nothing)
     steps_vec = steps isa Integer ? [Int(steps)] : Int.(collect(steps))
     length(steps_vec) >= 1 || throw(ArgumentError("steps must contain at least one segment"))
@@ -82,9 +86,9 @@ function optimize_latent(cost_fn,
 
     objective_scalar(z::AbstractVector) = begin
         z32 = eltype(z) === Float32 ? z : Float32.(z)
-        res = trajectory(ds, model_eff, x0, z32, steps_vec; u_len=u_len_final)
-        strj = res.state_trajectory
-        return sum(cost_fn(strj)) / size(strj, 2)
+        res = trajectory(ds, model_eff, x0, z32, steps_vec; u_len=u_len_final, output_map=output_map)
+        ytrj = res.output_trajectory
+        return sum(cost_fn(ytrj)) / size(ytrj, 2)
     end
 
     function my_objective_fn(z::AbstractVector, grad::AbstractVector)
@@ -127,13 +131,14 @@ At each MPC iteration:
 - `max_time=Inf`: NLopt `maxtime` passed to each optimization call.
 - `u_len=nothing`: control dimension. If `nothing`, inferred from `ds.U` as `length(center(ds.U))`.
 - `latent_dim=nothing`: required only when `model` is a function; specifies the latent dimension.
+- `output_map=identity`: mapping from state to output used for `total_cost`.
 - `noise_fn=nothing`: optional noise sampler `noise_fn(rng) -> u_noise`. Defaults to `rng -> LazySets.sample(ds.U; rng=rng)`.
 - `noise_weight=0.0`: mixing weight between decoded control and noise.
 - `noise_rng=Random.default_rng()`: RNG passed to `noise_fn` for reproducibility.
 
 # Returns
 Named tuple:
-- `trajectory`: state trajectory matrix (columns over time).
+- `trajectory`: output trajectory matrix (columns over time).
 - `total_cost`: scalarized total cost `sum(cost_fn(trajectory))`.
 - `objectives`: vector of per-iteration objective values.
 - `u_noises`: matrix `u_len×steps_total` of the sampled noise vectors used at each MPC step (one column per step).
@@ -151,6 +156,7 @@ function mpc(cost_fn,
              max_time::Real=Inf,
              u_len=nothing,
              latent_dim::Union{Nothing,Integer}=nothing,
+             output_map::Function=identity,
              noise_fn::Union{Function,Nothing}=nothing,
              noise_weight::Real=0.0,
              noise_rng::Random.AbstractRNG=Random.default_rng())
@@ -187,7 +193,12 @@ function mpc(cost_fn,
     for k in 1:steps_total
         x = strj[:, end]
         res = optimize_latent(cost_fn, ds, x, model_eff, opt_steps_vec;
-                              algo=algo, init_z=z, max_time=max_time, seed=opt_seed, u_len=u_len_final)
+                              algo=algo,
+                              init_z=z,
+                              max_time=max_time,
+                              seed=opt_seed,
+                              u_len=u_len_final,
+                              output_map=output_map)
         push!(objectives, Float64(res.objective))
         z = res.z
 
@@ -204,7 +215,8 @@ function mpc(cost_fn,
         strj = hcat(strj, x_next)
     end
 
-    return (; trajectory=strj, total_cost=sum(cost_fn(strj)), objectives, u_noises, z)
+    output_trj = output_map === identity ? strj : _apply_output_map(output_map, strj)
+    return (; trajectory=output_trj, total_cost=sum(cost_fn(output_trj)), objectives, u_noises, z)
 end
 
 """

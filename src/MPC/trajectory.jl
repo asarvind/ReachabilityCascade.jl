@@ -69,15 +69,31 @@ _rollout_with_zsequence(ds::DiscreteRandomSystem, model_decode, x0, zseq, u_len_
     return (; state_trajectory=strj, input_trajectory=utrj)
 end
 
-_state_jacobians_from_z(ds, model, x0, z_flat, steps_vec, u_len_final, t_idxs::Vector{Int}; eps::Real) = begin
+_apply_output_map(output_map::Function, strj::AbstractMatrix) = begin
+    if output_map === identity
+        return strj
+    end
+
+    y0 = output_map(strj[:, 1])
+    y_vec = y0 isa AbstractVector ? y0 : vec(y0)
+    ytrj = reshape(y_vec, :, 1)
+    for t in 2:size(strj, 2)
+        yt = output_map(strj[:, t])
+        y_vec_t = yt isa AbstractVector ? yt : vec(yt)
+        ytrj = hcat(ytrj, y_vec_t)
+    end
+    return ytrj
+end
+
+_output_jacobians_from_z(ds, model, x0, z_flat, steps_vec, u_len_final, t_idxs::Vector{Int}; eps::Real, output_map::Function) = begin
     base = _rollout_with_zmat(ds, model, x0,
                               reshape(z_flat, _latent_dim(model), length(steps_vec)),
                               steps_vec,
                               u_len_final)
-    strj = base.state_trajectory
-    state_dim = size(strj, 1)
+    ytrj = _apply_output_map(output_map, base.state_trajectory)
+    output_dim = size(ytrj, 1)
     z_len = length(z_flat)
-    jacobians = [zeros(Float64, state_dim, z_len) for _ in 1:length(t_idxs)]
+    jacobians = [zeros(Float64, output_dim, z_len) for _ in 1:length(t_idxs)]
 
     for k in 1:z_len
         z_pert = copy(z_flat)
@@ -86,7 +102,8 @@ _state_jacobians_from_z(ds, model, x0, z_flat, steps_vec, u_len_final, t_idxs::V
                                  reshape(z_pert, _latent_dim(model), length(steps_vec)),
                                  steps_vec,
                                  u_len_final)
-        diff = (Float64.(res.state_trajectory) .- Float64.(strj)) ./ eps
+        ytrj_pert = _apply_output_map(output_map, res.state_trajectory)
+        diff = (Float64.(ytrj_pert) .- Float64.(ytrj)) ./ eps
         for (j, t) in pairs(t_idxs)
             jacobians[j][:, k] = diff[:, t]
         end
@@ -94,12 +111,12 @@ _state_jacobians_from_z(ds, model, x0, z_flat, steps_vec, u_len_final, t_idxs::V
     return jacobians
 end
 
-_state_jacobians_from_zsequence(ds, model_decode, x0, zseq, u_len_final, t_idxs::Vector{Int}; eps::Real) = begin
+_output_jacobians_from_zsequence(ds, model_decode, x0, zseq, u_len_final, t_idxs::Vector{Int}; eps::Real, output_map::Function) = begin
     base = _rollout_with_zsequence(ds, model_decode, x0, zseq, u_len_final)
-    strj = base.state_trajectory
-    state_dim = size(strj, 1)
+    ytrj = _apply_output_map(output_map, base.state_trajectory)
+    output_dim = size(ytrj, 1)
     z_len = length(zseq)
-    jacobians = [zeros(Float64, state_dim, z_len) for _ in 1:length(t_idxs)]
+    jacobians = [zeros(Float64, output_dim, z_len) for _ in 1:length(t_idxs)]
 
     for k in 1:z_len
         z_pert = copy(vec(zseq))
@@ -107,7 +124,8 @@ _state_jacobians_from_zsequence(ds, model_decode, x0, zseq, u_len_final, t_idxs:
         res = _rollout_with_zsequence(ds, model_decode, x0,
                                       reshape(z_pert, size(zseq, 1), size(zseq, 2)),
                                       u_len_final)
-        diff = (Float64.(res.state_trajectory) .- Float64.(strj)) ./ eps
+        ytrj_pert = _apply_output_map(output_map, res.state_trajectory)
+        diff = (Float64.(ytrj_pert) .- Float64.(ytrj)) ./ eps
         for (j, t) in pairs(t_idxs)
             jacobians[j][:, k] = diff[:, t]
         end
@@ -130,7 +148,7 @@ Internally, the flat vector is interpreted as a matrix via:
 
 # Arguments
 - `ds`: [`DiscreteRandomSystem`](@ref).
-- `model`: either [`InvertibleCoupling`](@ref) or [`NormalizingFlow`](@ref).
+- `model`: either [`InvertibleCoupling`](@ref), [`NormalizingFlow`](@ref), or a function `model(x, z) -> u`.
 - `x0`: initial state vector.
 - `z`: flat latent vector.
 - `steps`: integer or vector of integers describing horizon splits.
@@ -138,15 +156,17 @@ Internally, the flat vector is interpreted as a matrix via:
 # Keyword Arguments
 - `u_len=nothing`: control dimension. If `nothing`, it is inferred as `length(center(ds.U))` when `ds` has a field `U`.
   The decoded output is sliced to `u[1:u_len]`.
-- `jacobian_times=Int[]`: time indices (columns of the state trajectory) for which to compute `∂x_t/∂z`.
+- `latent_dim=nothing`: required only when `model` is a function; specifies the latent dimension.
+- `output_map=identity`: function mapping a state vector to an output vector.
+- `jacobian_times=Int[]`: time indices (columns of the output trajectory) for which to compute `∂y_t/∂z`.
   The first column (initial state) is index `1`. If empty, Jacobians are not computed.
 - `eps=1f-6`: finite-difference step used when `jacobian_times` is non-empty.
 
 # Returns
 Named tuple:
-- `state_trajectory`: state matrix `n×(1+sum(steps))` with the first column equal to `x0`.
+- `output_trajectory`: output matrix `p×(1+sum(steps))` with the first column equal to `output_map(x0)`.
 - `input_trajectory`: control matrix `u_len×sum(steps)` with one column per applied input.
-- `state_jocobians` (optional): vector of Jacobian matrices in the same order as `jacobian_times`.
+- `output_jacobians` (optional): vector of Jacobian matrices in the same order as `jacobian_times`.
 """
 function trajectory(ds::DiscreteRandomSystem,
                     model,
@@ -154,6 +174,8 @@ function trajectory(ds::DiscreteRandomSystem,
                     z,
                     steps;
                     u_len=nothing,
+                    latent_dim::Union{Nothing,Integer}=nothing,
+                    output_map::Function=identity,
                     jacobian_times::Vector{<:Integer}=Int[],
                     eps::Real=1f-6)
     steps_vec = steps isa Integer ? [Int(steps)] : Int.(collect(steps))
@@ -161,26 +183,37 @@ function trajectory(ds::DiscreteRandomSystem,
 
     u_len_final = _infer_u_len(ds, u_len)
 
+    model_eff = if model isa Function
+        latent_dim === nothing && throw(ArgumentError("latent_dim must be provided when model is a function"))
+        LatentPolicy(model, Int(latent_dim))
+    else
+        model
+    end
+
     z_flat = z isa AbstractVector ? z : vec(z)
-    zmat = reshape(z_flat, _latent_dim(model), length(steps_vec))
+    zmat = reshape(z_flat, _latent_dim(model_eff), length(steps_vec))
 
     t_idxs = Int.(jacobian_times)
     if isempty(t_idxs)
-        res = _rollout_with_zmat(ds, model, x0, zmat, steps_vec, u_len_final)
-        return res
+        res = _rollout_with_zmat(ds, model_eff, x0, zmat, steps_vec, u_len_final)
+        ytrj = _apply_output_map(output_map, res.state_trajectory)
+        return (; output_trajectory=ytrj, input_trajectory=res.input_trajectory)
     end
 
     any(t -> t < 1, t_idxs) && throw(ArgumentError("jacobian_times must be ≥ 1"))
     max_t = maximum(t_idxs)
     steps_vec = _truncate_steps(steps_vec, max_t)
-    zmat = reshape(z_flat, _latent_dim(model), length(steps_vec))
+    zmat = reshape(z_flat, _latent_dim(model_eff), length(steps_vec))
 
-    res = _rollout_with_zmat(ds, model, x0, zmat, steps_vec, u_len_final)
-    max_t <= size(res.state_trajectory, 2) ||
-        throw(ArgumentError("jacobian_times contains index $max_t beyond trajectory length $(size(res.state_trajectory, 2))"))
+    res = _rollout_with_zmat(ds, model_eff, x0, zmat, steps_vec, u_len_final)
+    ytrj = _apply_output_map(output_map, res.state_trajectory)
+    max_t <= size(ytrj, 2) ||
+        throw(ArgumentError("jacobian_times contains index $max_t beyond trajectory length $(size(ytrj, 2))"))
 
-    jacobians = _state_jacobians_from_z(ds, model, x0, z_flat, steps_vec, u_len_final, t_idxs; eps=Float64(eps))
-    return (; res..., state_jocobians=jacobians)
+    jacobians = _output_jacobians_from_z(ds, model_eff, x0, z_flat, steps_vec, u_len_final, t_idxs;
+                                         eps=Float64(eps),
+                                         output_map=output_map)
+    return (; output_trajectory=ytrj, input_trajectory=res.input_trajectory, output_jacobians=jacobians)
 end
 
 """
@@ -208,15 +241,16 @@ At each step with current state `x` as the context:
 - `seed=rand(1:10000)`: NLopt seed passed to each per-step optimization call.
 - `norm_kind=:l1`: norm used in the objective (`:l1`, `:l2`, or `:linf`).
 - `u_len=nothing`: control dimension. If `nothing`, inferred as `length(center(ds.U))` when `ds` has a field `U`.
-- `jacobian_times=Int[]`: time indices (columns of the state trajectory) for which to compute `∂x_t/∂z`.
+- `output_map=identity`: function mapping a state vector to an output vector.
+- `jacobian_times=Int[]`: time indices (columns of the output trajectory) for which to compute `∂y_t/∂z`.
   The first column (initial state) is index `1`. If empty, Jacobians are not computed.
 - `eps=1f-6`: finite-difference step used when `jacobian_times` is non-empty.
 
 # Returns
 Named tuple:
-- `state_trajectory`: state matrix `n×(1+steps_total)` with the first column equal to `x0`.
+- `output_trajectory`: output matrix `p×(1+steps_total)` with the first column equal to `output_map(x0)`.
 - `input_trajectory`: control matrix `u_len×steps_total` with one column per applied input.
-- `state_jocobians` (optional): vector of Jacobian matrices in the same order as `jacobian_times`.
+- `output_jacobians` (optional): vector of Jacobian matrices in the same order as `jacobian_times`.
 """
 function trajectory(ds::DiscreteRandomSystem,
                     model_decode::InvertibleCoupling,
@@ -229,6 +263,7 @@ function trajectory(ds::DiscreteRandomSystem,
                     seed::Integer=rand(1:10000),
                     norm_kind::Symbol=:l1,
                     u_len=nothing,
+                    output_map::Function=identity,
                     jacobian_times::Vector{<:Integer}=Int[],
                     eps::Real=1f-6)
     steps_total = steps isa Integer ? Int(steps) : sum(Int.(collect(steps)))
@@ -270,17 +305,20 @@ function trajectory(ds::DiscreteRandomSystem,
         strj = hcat(strj, x_next)
     end
 
-    res = (; state_trajectory=strj, input_trajectory=utrj)
+    ytrj = _apply_output_map(output_map, strj)
+    res = (; output_trajectory=ytrj, input_trajectory=utrj)
     if isempty(t_idxs)
         return res
     end
 
     max_t = maximum(t_idxs)
-    max_t <= size(res.state_trajectory, 2) ||
-        throw(ArgumentError("jacobian_times contains index $max_t beyond trajectory length $(size(res.state_trajectory, 2))"))
+    max_t <= size(res.output_trajectory, 2) ||
+        throw(ArgumentError("jacobian_times contains index $max_t beyond trajectory length $(size(res.output_trajectory, 2))"))
 
-    jacobians = _state_jacobians_from_zsequence(ds, model_decode, x0, zseq, u_len_final, t_idxs; eps=Float64(eps))
-    return (; res..., state_jocobians=jacobians)
+    jacobians = _output_jacobians_from_zsequence(ds, model_decode, x0, zseq, u_len_final, t_idxs;
+                                                 eps=Float64(eps),
+                                                 output_map=output_map)
+    return (; res..., output_jacobians=jacobians)
 end
 
 _truncate_steps(steps_vec::Vector{Int}, max_t::Int) = begin

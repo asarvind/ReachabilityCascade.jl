@@ -70,6 +70,13 @@ module CarDynamics
     include("examples/car/modelbuilders.jl")
 end
 
+module Robot3DOF
+    using LazySets
+    using ..ControlSystem: ContinuousSystem, DiscreteRandomSystem
+    include("examples/robot3dof/dynamics.jl")
+    export robot3dof_field, joint_positions, discrete_robot3dof
+end
+
 module CarDataGeneration
     using LazySets, JuMP, LinearAlgebra, HiGHS, JLD2
     using ..ControlSystem: DiscreteRandomSystem

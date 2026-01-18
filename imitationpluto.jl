@@ -502,7 +502,9 @@ let
 		res_drift = mpc(thiscost, ds, x0, model_flow, drift_steps; algo=algo, max_time=max_time, noise_weight=0.2, noise_rng=noise_rng, opt_steps=opt_steps, opt_seed=1)
 		x_drift = res_drift.trajectory[:, drift_steps]
 
-		init_strj, init_utrj = trajectory(ds, model_invunit, x_drift, repeat(zeros(Float32, 2),length(opt_steps)), opt_steps)
+		init_res = trajectory(ds, model_invunit, x_drift, repeat(zeros(Float32, 2),length(opt_steps)), opt_steps)
+		init_strj = init_res.output_trajectory
+		init_utrj = init_res.input_trajectory
 
 		res_invunit = mpc(thiscost, ds, x_drift, model_invunit, 20; algo=algo, max_time=max_time, noise_weight=0.0, opt_steps=opt_steps, opt_seed=1)
 

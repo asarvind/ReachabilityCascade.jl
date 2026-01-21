@@ -90,26 +90,165 @@ Build a discrete-time system for the planar 3-link arm using the continuous dyna
 # Keyword Arguments
 - `t=0.1`: discretization time step.
 - `dt=1f-3`: integration time step used inside the continuous rollouts.
-- `link_lengths=[0.5, 0.4, 0.3]`: link lengths (m).
-- `link_masses=[2.0, 1.5, 1.0]`: link masses (kg).
-- `com_offsets=nothing`: COM offsets along each link (m). Defaults to `length/2`.
-- `link_inertias=nothing`: planar inertias about each link COM (kg·m^2).
-  Defaults to `m*l^2/12` for each link.
-- `coriolis=true`: include Coriolis/centrifugal terms.
-- `fd_eps=1e-6`: finite-difference step for Coriolis term.
+- `box_size=0.5`: side length of each box (kept for downstream use).
 """
 function discrete_robot3dof(; t::Real=0.1,
-                            dt::Real=1f-3)
-    X = Hyperrectangle(zeros(Float32, 6), vcat(fill(Float32(pi / 2), 3), fill(2.0f0, 3)))
+                            dt::Real=1f-3,
+                            box_size::Real=0.5)
+    _ = box_size
+
+    X_arm_center = zeros(Float32, 6)
+    X_arm_radius = vcat(fill(Float32(pi / 2), 3), fill(2.0f0, 3))
+
+    X_box_center = zeros(Float32, 4)
+    X_box_radius = fill(100.0f0, 4)
+
+    X_center = vcat(X_arm_center, X_box_center, X_box_center)
+    X_radius = vcat(X_arm_radius, X_box_radius, X_box_radius)
+    X = Hyperrectangle(X_center, X_radius)
+
     U = Hyperrectangle(zeros(Float32, 3), fill(10.0f0, 3))
     V = Hyperrectangle(zeros(Float32, 3), fill(10.0f0, 3))
-    W = Hyperrectangle(zeros(Float32, 6), zeros(Float32, 6))
+    W = Hyperrectangle(zeros(Float32, 14), zeros(Float32, 14))
 
-    field = (x, u, w) -> robot3dof_accel_field(x, u; w=w)
+    field = (x, u, w) -> begin
+        dx_arm = robot3dof_accel_field(x[1:6], u; w=w[1:6])
+        vx1, vy1 = x[9], x[10]
+        dx_box1 = Float32.([vx1, vy1, 0.0, 0.0]) .+ Float32.(w[7:10])
+        vx2, vy2 = x[13], x[14]
+        dx_box2 = Float32.([vx2, vy2, 0.0, 0.0]) .+ Float32.(w[11:14])
+        return vcat(dx_arm, dx_box1, dx_box2)
+    end
 
     cs = ContinuousSystem(X, U, W, field)
     κ = (x, v, t) -> v
     return DiscreteRandomSystem(cs, V, κ, t; dt=dt)
+end
+
+"""
+    robot3dof_smt_formulas(ds; kwargs...) -> (safety_output, terminal_output, output_map)
+
+Construct SMT formulas for avoiding a moving box (box 2) and reaching inside box 1.
+
+The safety constraints enforce all joint positions (including the end effector)
+to remain outside the box with a margin. The terminal constraints enforce the end
+effector to lie inside the square footprint of box 1.
+
+# Keyword Arguments
+- `box1_size=0.5`: side length of the reach box (m).
+- `box2_size=0.5`: side length of the collision box (m).
+"""
+function robot3dof_smt_formulas(ds::DiscreteRandomSystem;
+                                box1_size::Real=0.5,
+                                box2_size::Real=0.5)
+    half1 = Float32(box1_size / 2)
+    half2 = Float32(box2_size / 2)
+
+    output_map = x -> begin
+        pos = joint_positions(x)
+        q = Float32.(x[1:3])
+        qd = Float32.(x[4:6])
+        box1 = Float32.(x[7:10])
+        box2 = Float32.(x[11:14])
+        return vcat(vec(pos), q, qd, box1, box2)
+    end
+
+    out_dim = 20
+    p1x, p1y = 1, 2
+    p2x, p2y = 3, 4
+    p3x, p3y = 5, 6
+    q_idxs = 7:9
+    qd_idxs = 10:12
+    box1_x = 13
+    box1_y = 14
+    box1_vx = 15
+    box1_vy = 16
+    box2_x = 17
+    box2_y = 18
+    box2_vx = 19
+    box2_vy = 20
+
+    safety_output = Matrix{Float32}[]
+
+    # Use link midpoints (not joint points) to approximate link-box collision checks.
+    link_points = [
+        ([(p1x, 0.5f0)], [(p1y, 0.5f0)]),                    # midpoint of base -> p1
+        ([(p1x, 0.5f0), (p2x, 0.5f0)], [(p1y, 0.5f0), (p2y, 0.5f0)]), # midpoint of p1 -> p2
+        ([(p2x, 0.5f0), (p3x, 0.5f0)], [(p2y, 0.5f0), (p3y, 0.5f0)]), # midpoint of p2 -> p3
+    ]
+    for (x_terms, y_terms) in link_points
+        mat = zeros(Float32, 4, out_dim + 1)
+        for (idx, weight) in x_terms
+            mat[1, idx] += weight
+            mat[2, idx] -= weight
+        end
+        mat[1, box2_x] = -1.0f0
+        mat[1, end] = half2
+        mat[2, box2_x] = 1.0f0
+        mat[2, end] = half2
+        for (idx, weight) in y_terms
+            mat[3, idx] += weight
+            mat[4, idx] -= weight
+        end
+        mat[3, box2_y] = -1.0f0
+        mat[3, end] = half2
+        mat[4, box2_y] = 1.0f0
+        mat[4, end] = half2
+        push!(safety_output, mat)
+    end
+
+    hasproperty(ds, :X) || throw(ArgumentError("ds must have field X to infer state bounds"))
+    X = getproperty(ds, :X)
+    X isa LazySets.Hyperrectangle || throw(ArgumentError("ds.X must be a Hyperrectangle to infer bounds"))
+    x_center = center(X)
+    x_radius = radius_hyperrectangle(X)
+    x_lo = x_center .- x_radius
+    x_hi = x_center .+ x_radius
+
+    state_map = Dict(
+        q_idxs[1] => 1, q_idxs[2] => 2, q_idxs[3] => 3,
+        qd_idxs[1] => 4, qd_idxs[2] => 5, qd_idxs[3] => 6,
+        box1_x => 7, box1_y => 8, box1_vx => 9, box1_vy => 10,
+        box2_x => 11, box2_y => 12, box2_vx => 13, box2_vy => 14,
+    )
+    for (out_idx, state_idx) in state_map
+        row_hi = zeros(Float32, out_dim + 1)
+        row_hi[out_idx] = 1.0f0
+        row_hi[end] = -Float32(x_hi[state_idx])
+        push!(safety_output, reshape(row_hi, 1, :))
+
+        row_lo = zeros(Float32, out_dim + 1)
+        row_lo[out_idx] = -1.0f0
+        row_lo[end] = Float32(x_lo[state_idx])
+        push!(safety_output, reshape(row_lo, 1, :))
+    end
+
+    terminal_output = Matrix{Float32}[]
+    mat_x_hi = zeros(Float32, out_dim + 1)
+    mat_x_hi[p3x] = 1.0f0
+    mat_x_hi[box1_x] = -1.0f0
+    mat_x_hi[end] = -half1
+    push!(terminal_output, reshape(mat_x_hi, 1, :))
+
+    mat_x_lo = zeros(Float32, out_dim + 1)
+    mat_x_lo[p3x] = -1.0f0
+    mat_x_lo[box1_x] = 1.0f0
+    mat_x_lo[end] = -half1
+    push!(terminal_output, reshape(mat_x_lo, 1, :))
+
+    mat_y_hi = zeros(Float32, out_dim + 1)
+    mat_y_hi[p3y] = 1.0f0
+    mat_y_hi[box1_y] = -1.0f0
+    mat_y_hi[end] = -half1
+    push!(terminal_output, reshape(mat_y_hi, 1, :))
+
+    mat_y_lo = zeros(Float32, out_dim + 1)
+    mat_y_lo[p3y] = -1.0f0
+    mat_y_lo[box1_y] = 1.0f0
+    mat_y_lo[end] = -half1
+    push!(terminal_output, reshape(mat_y_lo, 1, :))
+
+    return safety_output, terminal_output, output_map
 end
 
 """

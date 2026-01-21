@@ -201,8 +201,8 @@ end
         z_ref,
         2,
         safety_output,
-        safety_input,
         terminal_output;
+        safety_input=safety_input,
         u_len=1,
     )
 
@@ -213,8 +213,8 @@ end
         z_ref,
         2,
         safety_output,
-        safety_input,
         terminal_output;
+        safety_input=safety_input,
         u_len=1,
         eps=1f-6,
     )
@@ -222,4 +222,288 @@ end
     @test affine.safety_output[1][1, end] ≈ base.safety_output[1][1]
     @test affine.safety_input[1][1, end] ≈ base.safety_input[1][1]
     @test affine.terminal_output[1][1, end] ≈ base.terminal_output[1][1]
+end
+
+@testset "smt_all_evaluations keeps all time points" begin
+    X = Hyperrectangle(zeros(1), ones(1))
+    U = Hyperrectangle(zeros(1), ones(1))
+    ds = ReachabilityCascade.DiscreteRandomSystem(X, U, (x, u) -> x .+ u[1])
+
+    model = DummyModel(1)
+    x0 = [0.0]
+    z = Float32[0.2]
+
+    safety_output = [Float64[1.0 0.0]]
+    terminal_output = [Float64[-1.0 0.0]]
+
+    traj = ReachabilityCascade.MPC.trajectory(ds, model, x0, z, 2; u_len=1)
+
+    res = ReachabilityCascade.MPC.smt_all_evaluations(
+        ds,
+        model,
+        x0,
+        z,
+        2,
+        safety_output,
+        terminal_output;
+        u_len=1,
+    )
+
+    @test length(res.safety_output) == size(traj.output_trajectory, 2) * length(safety_output)
+    @test length(res.safety_input) == size(traj.input_trajectory, 2) * 2
+    @test length(res.terminal_output) == 1
+end
+
+@testset "smt_affine_all matches base at z_ref" begin
+    X = Hyperrectangle(zeros(1), ones(1))
+    U = Hyperrectangle(zeros(1), ones(1))
+    ds = ReachabilityCascade.DiscreteRandomSystem(X, U, (x, u) -> x .+ u[1])
+
+    model = DummyModel(1)
+    x0 = [0.0]
+    z_ref = Float32[0.2]
+
+    safety_output = [Float64[1.0 0.0]]
+    safety_input = [Float64[1.0 0.0]]
+    terminal_output = [Float64[-1.0 0.0]]
+
+    base = ReachabilityCascade.MPC.smt_all_evaluations(
+        ds,
+        model,
+        x0,
+        z_ref,
+        2,
+        safety_output,
+        terminal_output;
+        safety_input=safety_input,
+        u_len=1,
+    )
+
+    affine = ReachabilityCascade.MPC.smt_affine_all(
+        ds,
+        model,
+        x0,
+        z_ref,
+        2,
+        safety_output,
+        terminal_output;
+        safety_input=safety_input,
+        u_len=1,
+        eps=1f-6,
+    )
+
+    for i in eachindex(base.safety_output)
+        @test affine.safety_output[i][1, end] ≈ base.safety_output[i][1]
+    end
+    for i in eachindex(base.safety_input)
+        @test affine.safety_input[i][1, end] ≈ base.safety_input[i][1]
+    end
+    @test affine.terminal_output[1][1, end] ≈ base.terminal_output[1][1]
+end
+
+@testset "smt_milp_critical solves trivial constraints" begin
+    X = Hyperrectangle(zeros(1), ones(1))
+    U = Hyperrectangle(zeros(1), ones(1))
+    ds = ReachabilityCascade.DiscreteRandomSystem(X, U, (x, u) -> x .+ u[1])
+
+    model = DummyModel(1)
+    x0 = [0.0]
+    z_ref = Float32[0.0]
+
+    safety_output = [Float32[0.0 0.0]]
+    safety_input = [Float32[0.0 0.0]]
+    terminal_output = [Float32[0.0 0.0]]
+
+    z_sol, info = ReachabilityCascade.MPC.smt_milp_critical(
+        ds,
+        model,
+        x0,
+        z_ref,
+        1,
+        safety_output,
+        terminal_output;
+        safety_input=safety_input,
+        u_len=1,
+    )
+
+    @test info.feasible
+    @test z_sol isa AbstractVector
+    @test z_sol[1] ≈ z_ref[1]
+end
+
+@testset "smt_milp_all solves trivial constraints" begin
+    X = Hyperrectangle(zeros(1), ones(1))
+    U = Hyperrectangle(zeros(1), ones(1))
+    ds = ReachabilityCascade.DiscreteRandomSystem(X, U, (x, u) -> x .+ u[1])
+
+    model = DummyModel(1)
+    x0 = [0.0]
+    z_ref = Float32[0.0]
+
+    safety_output = [Float32[0.0 0.0]]
+    safety_input = [Float32[0.0 0.0]]
+    terminal_output = [Float32[0.0 0.0]]
+
+    z_sol, info = ReachabilityCascade.MPC.smt_milp_all(
+        ds,
+        model,
+        x0,
+        z_ref,
+        2,
+        safety_output,
+        terminal_output;
+        safety_input=safety_input,
+        u_len=1,
+    )
+
+    @test info.feasible
+    @test z_sol isa AbstractVector
+    @test z_sol[1] ≈ z_ref[1]
+end
+
+@testset "smt_milp_iterative converges on trivial constraints" begin
+    X = Hyperrectangle(zeros(1), ones(1))
+    U = Hyperrectangle(zeros(1), ones(1))
+    ds = ReachabilityCascade.DiscreteRandomSystem(X, U, (x, u) -> x .+ u[1])
+
+    model = DummyModel(1)
+    x0 = [0.0]
+    z_ref = Float32[0.0]
+
+    safety_output = [Float32[0.0 0.0]]
+    terminal_output = [Float32[0.0 0.0]]
+
+    res = ReachabilityCascade.MPC.smt_milp_iterative(
+        ds,
+        model,
+        x0,
+        z_ref,
+        1,
+        safety_output,
+        terminal_output;
+        u_len=1,
+        max_iters=2,
+    )
+
+    @test res.satisfied
+    @test res.z isa AbstractVector
+end
+
+@testset "smt_milp_iterative supports all-time linearization" begin
+    X = Hyperrectangle(zeros(1), ones(1))
+    U = Hyperrectangle(zeros(1), ones(1))
+    ds = ReachabilityCascade.DiscreteRandomSystem(X, U, (x, u) -> x .+ u[1])
+
+    model = DummyModel(1)
+    x0 = [0.0]
+    z_ref = Float32[0.0]
+
+    safety_output = [Float32[0.0 0.0]]
+    terminal_output = [Float32[0.0 0.0]]
+
+    res = ReachabilityCascade.MPC.smt_milp_iterative(
+        ds,
+        model,
+        x0,
+        z_ref,
+        1,
+        safety_output,
+        terminal_output;
+        u_len=1,
+        max_iters=2,
+        linearization=:all,
+    )
+
+    @test res.satisfied
+    @test res.z isa AbstractVector
+end
+
+@testset "smt_cmaes returns finite objective" begin
+    X = Hyperrectangle(zeros(1), ones(1))
+    U = Hyperrectangle(zeros(1), ones(1))
+    ds = ReachabilityCascade.DiscreteRandomSystem(X, U, (x, u) -> x .+ u[1])
+
+    model = DummyModel(1)
+    x0 = [0.0]
+    z0 = Float32[0.0]
+
+    safety_output = [Float32[1.0 0.0]]
+    terminal_output = [Float32[-1.0 0.0]]
+
+    res = ReachabilityCascade.MPC.smt_cmaes(
+        ds,
+        model,
+        x0,
+        z0,
+        2,
+        safety_output,
+        terminal_output;
+        u_len=1,
+        iterations=2,
+        rng=Random.MersenneTwister(0),
+    )
+
+    @test isfinite(res.objective)
+    @test length(res.z) == 1
+end
+
+@testset "smt_optimize_latent returns trajectories" begin
+    X = Hyperrectangle(zeros(1), ones(1))
+    U = Hyperrectangle(zeros(1), ones(1))
+    ds = ReachabilityCascade.DiscreteRandomSystem(X, U, (x, u) -> x .+ u[1])
+
+    model = DummyModel(1)
+    x0 = [0.0]
+    z0 = Float32[0.0]
+
+    safety_output = [Float32[1.0 0.0]]
+    safety_input = [Float32[1.0 0.0]]
+    terminal_output = [Float32[-1.0 0.0]]
+
+    res = ReachabilityCascade.MPC.smt_optimize_latent(
+        ds,
+        model,
+        x0,
+        z0,
+        2,
+        safety_output,
+        safety_input,
+        terminal_output;
+        u_len=1,
+        algo=:LN_BOBYQA,
+    )
+
+    @test isfinite(res.objective)
+    @test size(res.output_trajectory, 2) == 3
+    @test size(res.input_trajectory, 2) == 2
+end
+
+@testset "smt_mpc returns trajectories" begin
+    X = Hyperrectangle(zeros(1), ones(1))
+    U = Hyperrectangle(zeros(1), ones(1))
+    ds = ReachabilityCascade.DiscreteRandomSystem(X, U, (x, u) -> x .+ u[1])
+
+    model = DummyModel(1)
+    x0 = [0.0]
+
+    safety_output = [Float32[1.0 0.0]]
+    safety_input = [Float32[1.0 0.0]]
+    terminal_output = [Float32[-1.0 0.0]]
+
+    res = ReachabilityCascade.MPC.smt_mpc(
+        ds,
+        model,
+        x0,
+        2,
+        safety_output,
+        safety_input,
+        terminal_output;
+        u_len=1,
+        algo=:LN_BOBYQA,
+        opt_steps=1,
+    )
+
+    @test size(res.output_trajectory, 2) == 3
+    @test size(res.input_trajectory, 2) == 2
+    @test length(res.objectives) == 2
 end

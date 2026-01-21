@@ -74,6 +74,7 @@ _affine_group(vals_group::Vector{Vector{Float32}},
               safety_output::AbstractVector{<:AbstractMatrix},
               safety_input::AbstractVector{<:AbstractMatrix},
               terminal_output::AbstractVector{<:AbstractMatrix};
+              eval_fn::Function=smt_critical_evaluations,
               u_len=nothing,
               latent_dim::Union{Nothing,Integer}=nothing,
               output_map::Function=identity,
@@ -86,17 +87,17 @@ _affine_group(vals_group::Vector{Vector{Float32}},
         for k in 1:z_len
             z_pert = copy(z_ref_vec)
             z_pert[k] += eps
-            pert = smt_critical_evaluations(ds,
-                                            model,
-                                            x0,
-                                            z_pert,
-                                            steps,
-                                            safety_output,
-                                            safety_input,
-                                            terminal_output;
-                                            u_len=u_len,
-                                            latent_dim=latent_dim,
-                                            output_map=output_map)
+            pert = eval_fn(ds,
+                           model,
+                           x0,
+                           z_pert,
+                           steps,
+                           safety_output,
+                           terminal_output;
+                           u_len=u_len,
+                           safety_input=safety_input,
+                           latent_dim=latent_dim,
+                           output_map=output_map)
             pert_vals = extract_group(pert)[idx]
             diff = (Float32.(pert_vals) .- Float32.(vals_i)) ./ Float32(eps)
             A[:, k] = diff
@@ -109,7 +110,7 @@ end
 
 """
     smt_critical_evaluations(ds, model, x0, z, steps,
-                             safety_output, safety_input, terminal_output; kwargs...) -> result
+                             safety_output, terminal_output; kwargs...) -> result
 
 Compute SMT row evaluations at the most critical time for each disjunct.
 
@@ -125,13 +126,13 @@ The terminal output constraints are evaluated only at the final output time.
 - `z::AbstractVector`: flat latent vector.
 - `steps::Union{Integer,AbstractVector{<:Integer}}`: horizon splits; see [`trajectory`](@ref).
 - `safety_output::AbstractVector{<:AbstractMatrix}`: disjunct matrices acting on outputs.
-- `safety_input::AbstractVector{<:AbstractMatrix}`: disjunct matrices acting on inputs.
 - `terminal_output::AbstractVector{<:AbstractMatrix}`: disjunct matrices acting on final output.
 
 # Keyword Arguments
 - `u_len=nothing`: control dimension forwarded to [`trajectory`](@ref).
 - `latent_dim=nothing`: required only when `model` is a function.
 - `output_map=identity`: output map forwarded to [`trajectory`](@ref).
+- `safety_input=nothing`: disjunct matrices acting on inputs; defaults to bounds from `ds.U`.
 
 # Returns
 Named tuple:
@@ -145,21 +146,22 @@ function smt_critical_evaluations(ds::DiscreteRandomSystem,
                                   z,
                                   steps,
                                   safety_output::AbstractVector{<:AbstractMatrix},
-                                  safety_input::AbstractVector{<:AbstractMatrix},
                                   terminal_output::AbstractVector{<:AbstractMatrix};
                                   u_len=nothing,
+                                  safety_input::Union{Nothing,AbstractVector{<:AbstractMatrix}}=nothing,
                                   latent_dim::Union{Nothing,Integer}=nothing,
                                   output_map::Function=identity)
+    safety_input_eff = safety_input === nothing ? _input_bounds_constraints(ds) : safety_input
     res = trajectory(ds, model, x0, z, steps;
                      u_len=u_len,
-                     latent_dim=latent_dim,
+                      latent_dim=latent_dim,
                      output_map=output_map)
 
     ytrj = res.output_trajectory
     utrj = res.input_trajectory
 
     safety_output_vals = [ _critical_row_values(mat, ytrj) for mat in safety_output ]
-    safety_input_vals = [ _critical_row_values(mat, utrj) for mat in safety_input ]
+    safety_input_vals = [ _critical_row_values(mat, utrj) for mat in safety_input_eff ]
 
     terminal_output_vals = Vector{Vector{Float32}}(undef, length(terminal_output))
     y_final = ytrj[:, end]
@@ -174,40 +176,8 @@ end
 
 
 """
-    smt_critical_evaluations(ds, model, x0, z, steps,
-                             safety_output, terminal_output; kwargs...) -> result
-
-Overload that infers input SMT constraints from `ds.U` bounds when `safety_input`
-is not provided.
-"""
-function smt_critical_evaluations(ds::DiscreteRandomSystem,
-                                  model,
-                                  x0,
-                                  z,
-                                  steps,
-                                  safety_output::AbstractVector{<:AbstractMatrix},
-                                  terminal_output::AbstractVector{<:AbstractMatrix};
-                                  u_len=nothing,
-                                  latent_dim::Union{Nothing,Integer}=nothing,
-                                  output_map::Function=identity)
-    safety_input = _input_bounds_constraints(ds)
-    return smt_critical_evaluations(ds,
-                                    model,
-                                    x0,
-                                    z,
-                                    steps,
-                                    safety_output,
-                                    safety_input,
-                                    terminal_output;
-                                    u_len=u_len,
-                                    latent_dim=latent_dim,
-                                    output_map=output_map)
-end
-
-
-"""
     smt_affine_critical(ds, model, x0, z_ref, steps,
-                        safety_output, safety_input, terminal_output; kwargs...) -> result
+                        safety_output, terminal_output; kwargs...) -> result
 
 Build affine (linearized) SMT constraints in `z` around `z_ref` using finite differences
 on the critical-time SMT evaluations.
@@ -222,7 +192,6 @@ computed by perturbing each component of `z_ref` with a finite-difference step.
 - `z_ref::AbstractVector`: reference latent vector for linearization.
 - `steps::Union{Integer,AbstractVector{<:Integer}}`: horizon splits; see [`trajectory`](@ref).
 - `safety_output::AbstractVector{<:AbstractMatrix}`: disjunct matrices acting on outputs.
-- `safety_input::AbstractVector{<:AbstractMatrix}`: disjunct matrices acting on inputs.
 - `terminal_output::AbstractVector{<:AbstractMatrix}`: disjunct matrices acting on final output.
 
 # Keyword Arguments
@@ -230,6 +199,8 @@ computed by perturbing each component of `z_ref` with a finite-difference step.
 - `latent_dim=nothing`: required only when `model` is a function.
 - `output_map=identity`: output map forwarded to [`trajectory`](@ref).
 - `eps=1f-6`: finite-difference step used for linearization.
+- `safety_input=nothing`: disjunct matrices acting on inputs; defaults to bounds from `ds.U`.
+- `return_base=false`: when `true`, also return the critical evaluations used to build the affine form.
 
 # Returns
 Named tuple of vectors of affine matrices in `z` space:
@@ -243,14 +214,16 @@ function smt_affine_critical(ds::DiscreteRandomSystem,
                              z_ref,
                              steps,
                              safety_output::AbstractVector{<:AbstractMatrix},
-                             safety_input::AbstractVector{<:AbstractMatrix},
                              terminal_output::AbstractVector{<:AbstractMatrix};
                              u_len=nothing,
+                             safety_input::Union{Nothing,AbstractVector{<:AbstractMatrix}}=nothing,
                              latent_dim::Union{Nothing,Integer}=nothing,
                              output_map::Function=identity,
-                             eps::Real=1f-6)
+                             eps::Real=1f-6,
+                             return_base::Bool=false)
     z_ref_vec = z_ref isa AbstractVector ? z_ref : vec(z_ref)
     z_len = length(z_ref_vec)
+    safety_input_eff = safety_input === nothing ? _input_bounds_constraints(ds) : safety_input
 
     base = smt_critical_evaluations(ds,
                                     model,
@@ -258,9 +231,9 @@ function smt_affine_critical(ds::DiscreteRandomSystem,
                                     z_ref_vec,
                                     steps,
                                     safety_output,
-                                    safety_input,
                                     terminal_output;
                                     u_len=u_len,
+                                    safety_input=safety_input_eff,
                                     latent_dim=latent_dim,
                                     output_map=output_map)
 
@@ -272,7 +245,7 @@ function smt_affine_critical(ds::DiscreteRandomSystem,
                                          z_ref_vec,
                                          steps,
                                          safety_output,
-                                         safety_input,
+                                         safety_input_eff,
                                          terminal_output;
                                          u_len=u_len,
                                          latent_dim=latent_dim,
@@ -286,7 +259,7 @@ function smt_affine_critical(ds::DiscreteRandomSystem,
                                         z_ref_vec,
                                         steps,
                                         safety_output,
-                                        safety_input,
+                                        safety_input_eff,
                                         terminal_output;
                                         u_len=u_len,
                                         latent_dim=latent_dim,
@@ -300,48 +273,15 @@ function smt_affine_critical(ds::DiscreteRandomSystem,
                                            z_ref_vec,
                                            steps,
                                            safety_output,
-                                           safety_input,
+                                           safety_input_eff,
                                            terminal_output;
                                            u_len=u_len,
                                            latent_dim=latent_dim,
                                            output_map=output_map,
                                            eps=eps)
 
-    return (; safety_output=safety_output_affine,
-             safety_input=safety_input_affine,
-             terminal_output=terminal_output_affine)
-end
-
-
-"""
-    smt_affine_critical(ds, model, x0, z_ref, steps,
-                        safety_output, terminal_output; kwargs...) -> result
-
-Overload that infers input SMT constraints from `ds.U` bounds when `safety_input`
-is not provided.
-"""
-function smt_affine_critical(ds::DiscreteRandomSystem,
-                             model,
-                             x0,
-                             z_ref,
-                             steps,
-                             safety_output::AbstractVector{<:AbstractMatrix},
-                             terminal_output::AbstractVector{<:AbstractMatrix};
-                             u_len=nothing,
-                             latent_dim::Union{Nothing,Integer}=nothing,
-                             output_map::Function=identity,
-                             eps::Real=1f-6)
-    safety_input = _input_bounds_constraints(ds)
-    return smt_affine_critical(ds,
-                               model,
-                               x0,
-                               z_ref,
-                               steps,
-                               safety_output,
-                               safety_input,
-                               terminal_output;
-                               u_len=u_len,
-                               latent_dim=latent_dim,
-                               output_map=output_map,
-                               eps=eps)
+    affine = (; safety_output=safety_output_affine,
+              safety_input=safety_input_affine,
+              terminal_output=terminal_output_affine)
+    return return_base ? (; affine, base) : affine
 end

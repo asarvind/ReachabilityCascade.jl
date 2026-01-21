@@ -140,3 +140,194 @@ function smt_latent(ds::DiscreteRandomSystem,
     info = (; termination_status=status, primal_status=primal, feasible=feasible)
     return z, info
 end
+
+_apply_output_map_vec(output_map::Function, x::AbstractVector) = begin
+    y = output_map(x)
+    return y isa AbstractVector ? y : vec(y)
+end
+
+_update_steps_vec(steps_vec::Vector{Int}) = begin
+    steps_next = copy(steps_vec)
+    steps_next[1] -= 1
+    if steps_next[1] <= 0
+        return steps_next[2:end], true
+    end
+    return steps_next, false
+end
+
+_update_z_ref(z_ref_vec::AbstractVector{<:Real},
+              z_sol::AbstractVector{<:Real},
+              latent_dim::Int,
+              dropped::Bool,
+              steps_len::Int) = begin
+    if dropped
+        if steps_len == 0
+            return Float32[]
+        end
+        return Float32.(z_sol[(latent_dim + 1):end])
+    end
+    return Float32.(z_sol)
+end
+
+"""
+    smt_milp_receding(ds, model, x0, z_ref, steps,
+                      safety_output, terminal_output; kwargs...) -> result
+
+Receding-horizon SMT optimization using MILP linearization at each step.
+
+At each iteration, an SMT MILP is solved around the current `z_ref`. The first
+input implied by the solution is applied, the state is advanced, and the horizon
+is reduced by one.
+
+# Arguments
+- `ds::DiscreteRandomSystem`: system to roll out.
+- `model`: [`InvertibleCoupling`](@ref), [`NormalizingFlow`](@ref), or `model(x, z) -> u`.
+- `x0::AbstractVector`: initial state vector.
+- `z_ref::AbstractVector`: initial reference latent vector.
+- `steps::Union{Integer,AbstractVector{<:Integer}}`: horizon splits; see [`trajectory`](@ref).
+- `safety_output::AbstractVector{<:AbstractMatrix}`: disjunct matrices acting on outputs.
+- `terminal_output::AbstractVector{<:AbstractMatrix}`: disjunct matrices acting on final output.
+
+# Keyword Arguments
+- `u_len=nothing`: control dimension forwarded to [`trajectory`](@ref).
+- `latent_dim=nothing`: required only when `model` is a function.
+- `output_map=identity`: output map used for the returned trajectory.
+- `eps=1f-6`: finite-difference step used for linearization.
+- `scale_steps=nothing`: optional per-segment scaling of the L1 objective.
+- `big_m=1e4`: big-M constant for disjunction encoding.
+- `optimizer=HiGHS.Optimizer`: solver constructor.
+- `silent=true`: if `true`, suppress solver output.
+- `safety_input=nothing`: disjunct matrices acting on inputs; defaults to bounds from `ds.U`.
+- `linearization=:critical`: `:critical` uses critical-time linearization; `:all` uses all-time.
+- `update_z_ref=true`: if `true`, updates the reference latent between steps.
+
+# Returns
+Named tuple:
+- `output_trajectory`: output matrix `p×(1+steps_total)` with the first column equal to `output_map(x0)`.
+- `input_trajectory`: control matrix `u_len×steps_total` with one column per applied input.
+- `z_sequence`: latent matrix `latent_dim×steps_total` of applied latents.
+- `satisfied`: whether the SMT evaluations were satisfied for the final trajectory.
+- `evaluations`: SMT row evaluations from [`smt_critical_evaluations`](@ref) for the final trajectory.
+- `infos`: vector of solver info tuples, one per iteration.
+"""
+function smt_milp_receding(ds::DiscreteRandomSystem,
+                           model,
+                           x0,
+                           z_ref,
+                           steps,
+                           safety_output::AbstractVector{<:AbstractMatrix},
+                           terminal_output::AbstractVector{<:AbstractMatrix};
+                           u_len=nothing,
+                           safety_input::Union{Nothing,AbstractVector{<:AbstractMatrix}}=nothing,
+                           latent_dim::Union{Nothing,Integer}=nothing,
+                           output_map::Function=identity,
+                           eps::Real=1f-6,
+                           scale_steps::Union{Nothing,AbstractVector{<:Real}}=nothing,
+                           big_m::Real=1e4,
+                           optimizer=HiGHS.Optimizer,
+                           silent::Bool=true,
+                           linearization::Symbol=:critical,
+                           update_z_ref::Bool=true)
+    steps_vec = steps isa Integer ? [Int(steps)] : Int.(collect(steps))
+    length(steps_vec) >= 1 || throw(ArgumentError("steps must contain at least one segment"))
+
+    u_len_final = _infer_u_len(ds, u_len)
+    model_eff = if model isa Function
+        latent_dim === nothing && throw(ArgumentError("latent_dim must be provided when model is a function"))
+        LatentPolicy(model, Int(latent_dim))
+    else
+        model
+    end
+    latent_dim_final = _latent_dim(model_eff)
+    z_ref_vec = z_ref isa AbstractVector ? Float32.(z_ref) : Float32.(vec(z_ref))
+    z_ref_init = copy(z_ref_vec)
+
+    if !(linearization in (:critical, :all))
+        throw(ArgumentError("linearization must be :critical or :all; got $linearization"))
+    end
+    milp_fn = linearization == :critical ? smt_milp_critical : smt_milp_all
+
+    safety_input_eff = safety_input === nothing ? _input_bounds_constraints(ds) : safety_input
+
+    x_curr = x0 isa AbstractVector ? Float32.(x0) : Float32.(vec(x0))
+    y0 = _apply_output_map_vec(output_map, x_curr)
+    ytrj = reshape(Float32.(y0), :, 1)
+    utrj = Matrix{Float32}(undef, u_len_final, 0)
+    ztrj = Matrix{Float32}(undef, latent_dim_final, 0)
+
+    infos = Vector{NamedTuple}(undef, 0)
+
+    while !isempty(steps_vec) && sum(steps_vec) > 0
+        z_sol, info = milp_fn(ds,
+                              model,
+                              x_curr,
+                              z_ref_vec,
+                              steps_vec,
+                              safety_output,
+                              terminal_output;
+                              u_len=u_len_final,
+                              safety_input=safety_input_eff,
+                              latent_dim=latent_dim,
+                              output_map=output_map,
+                              eps=eps,
+                              scale_steps=scale_steps,
+                              big_m=big_m,
+                              optimizer=optimizer,
+                              silent=silent)
+        push!(infos, info)
+        z_sol === nothing && break
+
+        zmat = reshape(Float32.(z_sol), latent_dim_final, length(steps_vec))
+        z_first = zmat[:, 1]
+        u = control_from_latent(model_eff, z_first, x_curr; u_len=u_len_final)
+        u_vec = u isa AbstractVector ? u : vec(u)
+        u_used = Float32.(u_vec[1:u_len_final])
+
+        utrj = hcat(utrj, u_used)
+        ztrj = hcat(ztrj, z_first)
+        x_next = ds(x_curr, u_used)
+        x_curr = Float32.(x_next)
+
+        y_next = _apply_output_map_vec(output_map, x_curr)
+        ytrj = hcat(ytrj, Float32.(y_next))
+
+        steps_vec, dropped = _update_steps_vec(steps_vec)
+        if update_z_ref
+            z_ref_vec = _update_z_ref(z_ref_vec, z_sol, latent_dim_final, dropped, length(steps_vec))
+        else
+            new_len = latent_dim_final * length(steps_vec)
+            if new_len == 0
+                z_ref_vec = Float32[]
+            else
+                z_ref_vec = z_ref_init[1:new_len]
+            end
+        end
+    end
+
+    safety_output_vals = [ _critical_row_values(mat, ytrj) for mat in safety_output ]
+    safety_input_vals = if size(utrj, 2) == 0
+        [Float32[-Inf] for _ in safety_input_eff]
+    else
+        [ _critical_row_values(mat, utrj) for mat in safety_input_eff ]
+    end
+    terminal_output_vals = Vector{Vector{Float32}}(undef, length(terminal_output))
+    y_final = ytrj[:, end]
+    for (i, mat) in pairs(terminal_output)
+        terminal_output_vals[i] = _matrix_row_values(mat, y_final)
+    end
+
+    evaluations = (; safety_output=safety_output_vals,
+                    safety_input=safety_input_vals,
+                    terminal_output=terminal_output_vals)
+
+    satisfied = all(minimum(vals) <= 0 for vals in evaluations.safety_output) &&
+                all(minimum(vals) <= 0 for vals in evaluations.safety_input) &&
+                all(minimum(vals) <= 0 for vals in evaluations.terminal_output)
+
+    return (; output_trajectory=ytrj,
+             input_trajectory=utrj,
+             z_sequence=ztrj,
+             satisfied=satisfied,
+             evaluations=evaluations,
+             infos=infos)
+end

@@ -12,11 +12,20 @@ import ..NormalizingFlows
 using ..InvertibleGame: InvertibleCoupling
 using ..NormalizingFlows: NormalizingFlow
 
-export trajectory, optimize_latent, mpc, smt_critical_evaluations
+export trajectory, optimize_latent, mpc,
+       smt_critical_evaluations, smt_affine_critical,
+       smt_all_evaluations, smt_affine_all,
+       smt_milp_critical, smt_milp_all, smt_milp_iterative,
+       smt_latent, smt_milp_receding, smt_cmaes,
+       smt_optimize_latent, smt_mpc
 
 include("trajectory.jl")
-include("smt.jl")
 include("smt_critical.jl")
+include("smt_all.jl")
+include("smt_milp.jl")
+include("smt_cmaes.jl")
+include("smt.jl")
+include("smt_optimize.jl")
 
 _nlopt_uses_grad(algo::Symbol) = occursin("D", String(algo))
 

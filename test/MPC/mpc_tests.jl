@@ -457,7 +457,6 @@ end
     z0 = Float32[0.0]
 
     safety_output = [Float32[1.0 0.0]]
-    safety_input = [Float32[1.0 0.0]]
     terminal_output = [Float32[-1.0 0.0]]
 
     res = ReachabilityCascade.MPC.smt_optimize_latent(
@@ -467,7 +466,6 @@ end
         z0,
         2,
         safety_output,
-        safety_input,
         terminal_output;
         u_len=1,
         algo=:LN_BOBYQA,
@@ -476,6 +474,35 @@ end
     @test isfinite(res.objective)
     @test size(res.output_trajectory, 2) == 3
     @test size(res.input_trajectory, 2) == 2
+end
+
+@testset "smt_penalty returns gradient when requested" begin
+    X = Hyperrectangle(zeros(1), ones(1))
+    U = Hyperrectangle(zeros(1), ones(1))
+    ds = ReachabilityCascade.DiscreteRandomSystem(X, U, (x, u) -> x .+ u[1])
+
+    model = DummyModel(1)
+    x0 = [0.0]
+    z0 = Float32[0.0]
+
+    safety_output = [Float32[1.0 0.0]]
+    terminal_output = [Float32[-1.0 0.0]]
+
+    res = ReachabilityCascade.MPC.smt_penalty(
+        ds,
+        model,
+        x0,
+        z0,
+        2,
+        safety_output,
+        terminal_output;
+        u_len=1,
+        return_grad=true,
+    )
+
+    @test isfinite(res.penalty)
+    @test res.grad !== nothing
+    @test length(res.grad) == 1
 end
 
 @testset "smt_mpc returns trajectories" begin
@@ -487,7 +514,6 @@ end
     x0 = [0.0]
 
     safety_output = [Float32[1.0 0.0]]
-    safety_input = [Float32[1.0 0.0]]
     terminal_output = [Float32[-1.0 0.0]]
 
     res = ReachabilityCascade.MPC.smt_mpc(
@@ -496,7 +522,6 @@ end
         x0,
         2,
         safety_output,
-        safety_input,
         terminal_output;
         u_len=1,
         algo=:LN_BOBYQA,

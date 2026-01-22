@@ -28,8 +28,8 @@ end
 		import ReachabilityCascade.Robot3DOF: discrete_robot3dof, robot3dof_smt_formulas, joint_positions
 		import ReachabilityCascade: DiscreteRandomSystem, InvertibleCoupling, NormalizingFlow
 		import ReachabilityCascade.InvertibleGame: inclusion_losses, decode, load_self
-		import ReachabilityCascade.MPC: trajectory, optimize_latent, mpc, smt_milp_iterative, smt_milp_receding, smt_cmaes
-		import ReachabilityCascade.TrainingAPI: build
+		import ReachabilityCascade.MPC: trajectory, optimize_latent, mpc, smt_milp_iterative, smt_milp_receding, smt_cmaes, smt_mpc
+		import ReachabilityCascade.TrainingAPI: build, load
 	end
 
 # ╔═╡ c0326d4c-de7e-45ca-9570-15b50e359623
@@ -276,7 +276,7 @@ let
 	# EMA opponent smoothing schedule (used for opponent EMA during gradient computation).
 	ema_beta_start = 0.0
 	ema_beta_final = 0.999
-	ema_tau = 1f4
+	ema_tau = 1f5
 	# Lower bound on sampled fake latent norm (0 means allow near-zero latents).
 	latent_radius_min = 0.0
 	# Gradient mode:
@@ -335,7 +335,7 @@ let
 	# ----------------------------
 	# Training args (match InvertibleCoupling config)
 	# ----------------------------
-	epochs = 45
+	epochs = 0
 	batch_size = 100
 	opt = Flux.OptimiserChain(Flux.ClipGrad(), Flux.ClipNorm(), Flux.Adam(1f-4))
 	save_period = 60.0
@@ -364,6 +364,70 @@ let
 	(; losses_flow)
 end
 
+# ╔═╡ a8967670-cb6a-4d82-940a-f2783bda11d1
+let
+	box1_size = 0.5
+	box2_size = 1.0
+	ds = discrete_robot3dof(; t=0.1, dt=0.1, box_size=box1_size)
+	smt_safety, smt_terminal, output_map = robot3dof_smt_formulas(ds; box1_size=box1_size, box2_size=box2_size)	
+	# model_unitinv, _ = load_self("data/robotarm/temp/selfinvertible.jld2")
+	model_unitinv, _ = load_self("data/robotarm/unitinvert/selfInitSeed200Iter0Epoch45EmaL0U999R1f5Latseed1.jld2")
+	model_flow = load(NormalizingFlow, "data/robotarm/temp/normalizingflow.jld2")
+
+	data = JLD2.load("data/robotarm/armtrajectories.jld2", "trajectories")
+	idtest = rand(1:length(data))
+	strj = data[idtest].state_trajectory
+	utrj = data[idtest].input_signal
+	start_time = 1
+	x0 = strj[:, start_time]
+
+	# x0[1] = -pi/2*0.2
+	x0[2] = -pi/2*0.2
+	# x0[3] = -pi/2*0.2
+
+	u_len = size(utrj, 1)
+	# steps = size(utrj, 2) - start_time + 1
+
+	opt_steps = [40]
+	steps = sum(opt_steps)
+
+	algo = :LN_COBYLA
+
+	res_unitinv = smt_mpc(ds, model_unitinv, x0, steps, smt_safety, smt_terminal;
+		u_len=u_len,
+		output_map=output_map,
+		algo=algo,
+		opt_steps=opt_steps,
+		max_time=0.2,
+		max_eval=200,
+		opt_seed=0,
+	)
+
+	res_flow_rand = smt_mpc(ds, model_flow, x0, steps, smt_safety, smt_terminal;
+		u_len=u_len,
+		output_map=output_map,
+		algo=algo,
+		opt_steps=opt_steps,
+		max_time=0.2,
+		max_eval=200,
+		opt_seed=0,
+		init_z = repeat(randn(3), length(opt_steps))
+	)
+
+	res_unitinv_long = smt_mpc(ds, model_unitinv, x0, steps, smt_safety, smt_terminal;
+		u_len=u_len,
+		output_map=output_map,
+		algo=algo,
+		opt_steps=repeat([1], sum(opt_steps)),
+		max_time=0.2,
+		max_eval=200,
+		opt_seed=0,
+		init_z = repeat(randn(3), sum(opt_steps))
+	)
+
+	(; res_unitinv, res_flow_rand, res_unitinv_long)
+end
+
 # ╔═╡ Cell order:
 # ╠═32f4a462-f2ea-11f0-16bd-711456f4b53b
 # ╠═a472418d-ee68-4db4-a40e-a1cf8ae15ac8
@@ -372,3 +436,4 @@ end
 # ╠═b2c91e2a-8d43-4d1b-9c7a-6c2e2a5b6e24
 # ╠═6f5bdf15-1d8c-4a8c-8c7d-05f51a4b96b8
 # ╠═0b2e2c0a-8f4e-4d2a-9a5d-63e2a7a5c1b1
+# ╠═a8967670-cb6a-4d82-940a-f2783bda11d1

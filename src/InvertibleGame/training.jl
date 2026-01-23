@@ -349,6 +349,7 @@ and all other construction arguments are provided as keyword arguments.
 - `rng_model=Random.default_rng()`: RNG used to initialize the model (permutations/weights).
 - `spec=nothing`: passed to `InvertibleCoupling(dim, context_dim; spec=...)`.
 - `logscale_clamp=2.0`: passed to the model.
+- `perms=nothing`: passed to the model to use deterministic permutations.
 
 # Returns
 `(model, ema, losses)`
@@ -375,7 +376,8 @@ and all other construction arguments are provided as keyword arguments.
 	               save_period::Real=60.0,
 	               rng_model::Random.AbstractRNG=Random.default_rng(),
 	               spec=nothing,
-	               logscale_clamp::Real=2.0)
+	               logscale_clamp::Real=2.0,
+	               perms=nothing)
     first_item = iterate(data_iter)
     first_item === nothing && throw(ArgumentError("data_iter is empty"))
     item, _ = first_item
@@ -387,7 +389,11 @@ and all other construction arguments are provided as keyword arguments.
 
     dim = x0 isa AbstractVector ? length(x0) : size(x0, 1)
     context_dim = context0 isa AbstractVector ? length(context0) : size(context0, 1)
-    model = InvertibleCoupling(dim, context_dim; spec=spec, logscale_clamp=logscale_clamp, rng=rng_model)
+    model = InvertibleCoupling(dim, context_dim;
+                               spec=spec,
+                               logscale_clamp=logscale_clamp,
+                               rng=rng_model,
+                               perms=perms)
 
 	    out = train!(model, data_iter;
 	                 epochs=epochs,

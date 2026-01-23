@@ -18,6 +18,7 @@ output and input trajectories (all-time semantics).
 - `algo=:LN_BOBYQA`: NLopt algorithm symbol.
 - `max_time=Inf`: NLopt `maxtime` (seconds).
 - `max_eval=0`: NLopt `maxeval` (0 means no limit).
+- `max_penalty_evals=0`: soft cap on total SMT penalty evaluations (0 means no limit).
 - `seed=rand(1:10000)`: NLopt RNG seed.
 - `safety_input=nothing`: disjunct matrices acting on inputs; defaults to bounds from `ds.U`.
 - `u_len=nothing`: forwarded to [`trajectory`](@ref) to slice decoded output.
@@ -27,6 +28,10 @@ output and input trajectories (all-time semantics).
 # Returns
 Named tuple:
 - `objective`: best SMT cost.
+- `objective_time_bounded`: best SMT cost observed before the `max_time` cutoff.
+- `z_time_bounded`: latent vector (flat) at the time-bounded best objective.
+- `evals_to_zero`: number of NLopt objective evaluations until penalty <= 0 (Inf if never).
+- `evals_to_zero_penalty`: estimated number of SMT penalty evaluations until penalty <= 0.
 - `z`: best latent vector (flat).
 - `result`: NLopt return code.
 - `output_trajectory`: output trajectory for the best `z`.
@@ -43,6 +48,7 @@ function smt_optimize_latent(ds::DiscreteRandomSystem,
                              algo::Symbol=:LN_BOBYQA,
                              max_time::Real=Inf,
                              max_eval::Integer=0,
+                             max_penalty_evals::Integer=0,
                              seed::Integer=rand(1:10000),
                              u_len=nothing,
                              output_map::Function=identity,
@@ -64,24 +70,60 @@ function smt_optimize_latent(ds::DiscreteRandomSystem,
     length(z0_vec) == l || throw(DimensionMismatch("z0 must have length $l; got length=$(length(z0_vec))"))
 
     use_grad = _nlopt_uses_grad(algo)
-    use_grad && throw(ArgumentError("Derivative-based NLopt algorithms are not supported; use a derivative-free algo."))
-
     safety_input_eff = safety_input === nothing ? _input_bounds_constraints(ds) : safety_input
 
-    objective_scalar(z::AbstractVector) = begin
-        res = smt_penalty(ds, model_eff, x0, z, steps_vec,
+    t0 = Ref{Union{Nothing,Float64}}(nothing)
+    best_val = Ref(Float64(Inf))
+    best_z_time = Ref(copy(z0_vec))
+    eval_count = 0
+    evals_to_zero = Ref(Float64(Inf))
+    total_penalty_evals = 0
+    opt_ref = Ref{NLopt.Opt}()
+    function my_objective_fn(z::Vector{Float64}, grad::Vector{Float64})
+        eval_cost = use_grad ? (length(z0_vec) + 1) : 1
+        if max_penalty_evals > 0 && total_penalty_evals + eval_cost > max_penalty_evals
+            if !isempty(grad)
+                grad .= 0.0
+            end
+            if opt_ref[] !== nothing
+                NLopt.force_stop!(opt_ref[])
+            end
+            return best_val[]
+        end
+        eval_count += 1
+        total_penalty_evals += eval_cost
+        if t0[] === nothing
+            t0[] = time()
+        end
+        z32 = Float32.(z)
+        res = smt_penalty(ds, model_eff, x0, z32, steps_vec,
                           safety_output, terminal_output;
                           safety_input=safety_input_eff,
                           u_len=u_len_final,
-                          output_map=output_map)
-        return res.penalty
-    end
-
-    function my_objective_fn(z::AbstractVector, grad::AbstractVector)
-        return Float64(objective_scalar(z))
+                          output_map=output_map,
+                          return_grad=use_grad)
+        if evals_to_zero[] == Inf && res.penalty <= 0
+            evals_to_zero[] = eval_count
+        end
+        val = Float64(res.penalty)
+        if best_val[] == Inf || (t0[] !== nothing && time() - t0[] <= max_time)
+            if val < best_val[]
+                best_val[] = val
+                best_z_time[] = copy(z)
+            end
+        end
+        if !isempty(grad)
+            if res.grad === nothing
+                grad .= 0.0
+            else
+                grad .= Float64.(res.grad)
+            end
+        end
+        return Float64(res.penalty)
     end
 
     opt = NLopt.Opt(algo, length(z0_vec))
+    opt_ref[] = opt
     NLopt.min_objective!(opt, my_objective_fn)
     NLopt.stopval!(opt, 0)
     NLopt.maxtime!(opt, max_time)
@@ -96,6 +138,12 @@ function smt_optimize_latent(ds::DiscreteRandomSystem,
                        output_map=output_map)
 
     return (; objective=min_f,
+             objective_time_bounded=best_val[],
+             z_time_bounded=best_z_time[],
+             evals_to_zero=evals_to_zero[],
+             evals_to_zero_penalty=use_grad ?
+                 (isfinite(evals_to_zero[]) ? (evals_to_zero[] * (length(z0_vec) + 1) - length(z0_vec)) : evals_to_zero[]) :
+                 evals_to_zero[],
              z=min_z,
              result=ret,
              output_trajectory=best.output_trajectory,
@@ -125,6 +173,7 @@ Receding-horizon MPC that minimizes the SMT cost at each step using
 - `opt_seed=rand(1:10000)`: NLopt seed for each optimization call.
 - `max_time=Inf`: NLopt `maxtime` passed to each optimization call.
 - `max_eval=0`: NLopt `maxeval` passed to each optimization call.
+- `max_penalty_evals=0`: soft cap on total SMT penalty evaluations per optimization call.
 - `u_len=nothing`: control dimension; inferred from `ds.U` if omitted.
 - `latent_dim=nothing`: required only when `model` is a function.
 - `output_map=identity`: mapping from state to output used for SMT evaluation.
@@ -132,6 +181,7 @@ Receding-horizon MPC that minimizes the SMT cost at each step using
 # Returns
 Named tuple:
 - `output_trajectory`: output trajectory matrix (columns over time).
+- `state_trajectory`: state trajectory matrix (columns over time).
 - `input_trajectory`: input matrix `u_len×steps_total`.
 - `objectives`: vector of per-step SMT objectives.
 - `objective_total`: SMT objective over the full MPC rollout.
@@ -150,6 +200,7 @@ function smt_mpc(ds::DiscreteRandomSystem,
                  opt_seed::Integer=rand(1:10000),
                  max_time::Real=Inf,
                  max_eval::Integer=0,
+                 max_penalty_evals::Integer=0,
                  u_len=nothing,
                  latent_dim::Union{Nothing,Integer}=nothing,
                  output_map::Function=identity)
@@ -184,11 +235,12 @@ function smt_mpc(ds::DiscreteRandomSystem,
                                   algo=algo,
                                   max_time=max_time,
                                   max_eval=max_eval,
+                                  max_penalty_evals=max_penalty_evals,
                                   seed=opt_seed,
                                   u_len=u_len_final,
                                   output_map=output_map)
-        push!(objectives, Float64(res.objective))
-        z = res.z
+        push!(objectives, Float64(res.objective_time_bounded))
+        z = res.z_time_bounded
 
         u = control_from_latent(model_eff, z[1:_latent_dim(model_eff)], x; u_len=u_len_final)
         u_used = Float32.(u isa AbstractVector ? u : vec(u))
@@ -219,6 +271,7 @@ function smt_mpc(ds::DiscreteRandomSystem,
                       _smt_penalty(safety_input_vals) +
                       _eventual_penalty(terminal_output, output_trj)
     return (; output_trajectory=output_trj,
+             state_trajectory=strj,
              input_trajectory=utrj,
              objectives,
              objective_total,

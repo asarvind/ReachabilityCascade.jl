@@ -28,7 +28,7 @@ end
 		import ReachabilityCascade.Robot3DOF: discrete_robot3dof, robot3dof_smt_formulas, joint_positions
 		import ReachabilityCascade: DiscreteRandomSystem, InvertibleCoupling, NormalizingFlow
 		import ReachabilityCascade.InvertibleGame: inclusion_losses, decode, load_self
-		import ReachabilityCascade.MPC: trajectory, optimize_latent, mpc, smt_milp_iterative, smt_milp_receding, smt_cmaes, smt_mpc
+		import ReachabilityCascade.MPC: trajectory, optimize_latent, mpc, smt_milp_iterative, smt_milp_receding, smt_cmaes, smt_mpc, smt_optimize_latent
 		import ReachabilityCascade.TrainingAPI: build, load
 	end
 
@@ -259,6 +259,9 @@ let
 	logscale_clamp = 2.0
 	margin_true = 1.0
 	margin_adv = 0.0
+	deterministic_perms = false
+	dim = size(it_arm.data[1].input_signal, 1)
+	perms = deterministic_perms ? [collect(1:dim) for _ in 1:size(spec, 2)] : nothing
 
 	# Quick switch for "inclusion-only" training:
 	# set `w_reject = 0.0` (keep `w_true = 1.0`).
@@ -269,9 +272,9 @@ let
 	# Training args (edit these)
 	# ----------------------------
 	# epochs = 45
-	epochs = 0
+	epochs = 45
 	batch_size = 100
-	opt = Flux.OptimiserChain(Flux.ClipGrad(), Flux.ClipNorm(), Flux.Adam(1f-4))
+	opt = Flux.OptimiserChain(Flux.ClipGrad(), Flux.ClipNorm(), Flux.Adam(1f-5))
 	use_memory = true
 	# EMA opponent smoothing schedule (used for opponent EMA during gradient computation).
 	ema_beta_start = 0.0
@@ -291,6 +294,7 @@ let
 	model, ema, losses = build(InvertibleCoupling, it_arm;
 		spec=spec,
 		logscale_clamp=logscale_clamp,
+		perms=perms,
 		margin_true=margin_true,
 		margin_adv=margin_adv,
 		w_true=w_true,
@@ -309,7 +313,7 @@ let
 		load_path=load_path,
 		save_period=save_period,
 		rng=Random.MersenneTwister(1),        # latent sampling RNG
-		rng_model=Random.MersenneTwister(200), # model init RNG
+		rng_model=Random.MersenneTwister(2000), # model init RNG
 	)
 	(; losses, model, ema)
 end
@@ -370,8 +374,8 @@ let
 	box2_size = 1.0
 	ds = discrete_robot3dof(; t=0.1, dt=0.1, box_size=box1_size)
 	smt_safety, smt_terminal, output_map = robot3dof_smt_formulas(ds; box1_size=box1_size, box2_size=box2_size)	
-	# model_unitinv, _ = load_self("data/robotarm/temp/selfinvertible.jld2")
-	model_unitinv, _ = load_self("data/robotarm/unitinvert/selfInitSeed200Iter0Epoch45EmaL0U999R1f5Latseed1.jld2")
+	# model_unitinv, _ = load_self("data/robotarm/unitinvert/selfInitSeed2000Iter0Epoch45EmaL0U999R1f5Latseed1.jld2")
+	model_unitinv, _ = load_self("data/robotarm/temp/selfinvertible.jld2")
 	model_flow = load(NormalizingFlow, "data/robotarm/temp/normalizingflow.jld2")
 
 	data = JLD2.load("data/robotarm/armtrajectories.jld2", "trajectories")
@@ -381,51 +385,84 @@ let
 	start_time = 1
 	x0 = strj[:, start_time]
 
-	# x0[1] = -pi/2*0.2
-	x0[2] = -pi/2*0.2
-	# x0[3] = -pi/2*0.2
+	x0[1] = rand(-pi/6:-pi/2*0.1:-pi/2*0.8)
+	x0[2] = rand(-pi/6:-pi/2*0.1:-pi/2*0.8)
+	x0[3] = rand(-pi/6:-pi/2*0.1:-pi/2*0.8)
+
+	# x0[10] += rand(-0.1:0.2:0.1)
 
 	u_len = size(utrj, 1)
 	# steps = size(utrj, 2) - start_time + 1
 
-	opt_steps = [40]
+	opt_steps_1 = [40]
+	opt_steps_2 = [20, 20]
+	opt_steps_3 = [15, 15, 10]
+	opt_steps_id = rand(1:3)
+	opt_steps_id = 1
+	opt_steps_vec = [opt_steps_1, opt_steps_2, opt_steps_3]
+	opt_steps = opt_steps_vec[opt_steps_id]
 	steps = sum(opt_steps)
 
-	algo = :LN_COBYLA
+	# algo = :LN_BOBYQA
+	algo = :LD_SLSQP
 
-	res_unitinv = smt_mpc(ds, model_unitinv, x0, steps, smt_safety, smt_terminal;
+	model_base = (x, z) -> z
+
+	@time init_res_base_long = smt_mpc(ds, model_flow, x0, 3, smt_safety, smt_terminal;
 		u_len=u_len,
 		output_map=output_map,
 		algo=algo,
-		opt_steps=opt_steps,
-		max_time=0.2,
-		max_eval=200,
+		opt_steps=sum(opt_steps),
+		max_time=0.01,
+		max_penalty_evals=0,
 		opt_seed=0,
+		init_z = randn(3),
+		latent_dim=3
 	)
 
-	res_flow_rand = smt_mpc(ds, model_flow, x0, steps, smt_safety, smt_terminal;
+	x0 = init_res_base_long.state_trajectory[:, end]
+
+	@time res_unitinv = smt_optimize_latent(ds, model_unitinv, x0, repeat(zeros(3), length(opt_steps)), opt_steps, smt_safety, smt_terminal;
 		u_len=u_len,
 		output_map=output_map,
 		algo=algo,
-		opt_steps=opt_steps,
-		max_time=0.2,
-		max_eval=200,
-		opt_seed=0,
-		init_z = repeat(randn(3), length(opt_steps))
+		max_time=Inf,
+		max_penalty_evals=200,
+		seed=0,
 	)
 
-	res_unitinv_long = smt_mpc(ds, model_unitinv, x0, steps, smt_safety, smt_terminal;
+	@time res_base_long = smt_optimize_latent(ds, model_base, x0, repeat(zeros(3), sum(opt_steps)), repeat([1], sum(opt_steps)), smt_safety, smt_terminal;
 		u_len=u_len,
 		output_map=output_map,
 		algo=algo,
-		opt_steps=repeat([1], sum(opt_steps)),
-		max_time=0.2,
-		max_eval=200,
-		opt_seed=0,
-		init_z = repeat(randn(3), sum(opt_steps))
+		max_time=Inf,
+		max_penalty_evals=200,
+		seed=0,
+		latent_dim=3
 	)
 
-	(; res_unitinv, res_flow_rand, res_unitinv_long)
+	@time res_base = smt_optimize_latent(ds, model_base, x0, repeat(zeros(3), length(opt_steps)), opt_steps, smt_safety, smt_terminal;
+		u_len=u_len,
+		output_map=output_map,
+		algo=algo,
+		max_time=Inf,
+		max_penalty_evals=200,
+		seed=0,
+		latent_dim=3
+	)
+
+	
+	@time res_unitinv_long = smt_optimize_latent(ds, model_unitinv, x0, repeat(zeros(3), sum(opt_steps)), repeat([1], sum(opt_steps)), smt_safety, smt_terminal;
+		u_len=u_len,
+		output_map=output_map,
+		algo=algo,
+		max_time=Inf,
+		max_penalty_evals=200,
+		seed=0,
+	)
+
+
+	(res_unitinv.evals_to_zero_penalty, res_base.evals_to_zero_penalty, res_base_long.evals_to_zero_penalty, res_unitinv_long.evals_to_zero_penalty)
 end
 
 # ╔═╡ Cell order:

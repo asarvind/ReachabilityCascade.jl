@@ -272,7 +272,7 @@ let
 	# Training args (edit these)
 	# ----------------------------
 	# epochs = 45
-	epochs = 45
+	epochs = 0
 	batch_size = 100
 	opt = Flux.OptimiserChain(Flux.ClipGrad(), Flux.ClipNorm(), Flux.Adam(1f-5))
 	use_memory = true
@@ -374,8 +374,8 @@ let
 	box2_size = 1.0
 	ds = discrete_robot3dof(; t=0.1, dt=0.1, box_size=box1_size)
 	smt_safety, smt_terminal, output_map = robot3dof_smt_formulas(ds; box1_size=box1_size, box2_size=box2_size)	
-	# model_unitinv, _ = load_self("data/robotarm/unitinvert/selfInitSeed2000Iter0Epoch45EmaL0U999R1f5Latseed1.jld2")
-	model_unitinv, _ = load_self("data/robotarm/temp/selfinvertible.jld2")
+	model_unitinv, _ = load_self("data/robotarm/unitinvert/selfInitSeed2000Iter0Epoch45EmaL0U999R1f5Latseed1.jld2")
+	# model_unitinv, _ = load_self("data/robotarm/temp/selfinvertible.jld2")
 	model_flow = load(NormalizingFlow, "data/robotarm/temp/normalizingflow.jld2")
 
 	data = JLD2.load("data/robotarm/armtrajectories.jld2", "trajectories")
@@ -390,9 +390,13 @@ let
 	x0[3] = rand(-pi/6:-pi/2*0.1:-pi/2*0.8)
 
 	# x0[10] += rand(-0.1:0.2:0.1)
+	# x0[7] = 0.9
+	# x0[8] = 0.1
+	# x0[11] = 0.5
+	# x0[12] = 10.0
 
 	u_len = size(utrj, 1)
-	# steps = size(utrj, 2) - start_time + 1
+	
 
 	opt_steps_1 = [40]
 	opt_steps_2 = [20, 20]
@@ -405,13 +409,13 @@ let
 
 	# algo = :LN_BOBYQA
 	algo = :LD_SLSQP
+	# algo = :GN_CMAES
 
 	model_base = (x, z) -> z
 
 	@time init_res_base_long = smt_mpc(ds, model_flow, x0, 3, smt_safety, smt_terminal;
 		u_len=u_len,
 		output_map=output_map,
-		algo=algo,
 		opt_steps=sum(opt_steps),
 		max_time=0.01,
 		max_penalty_evals=0,
@@ -427,7 +431,7 @@ let
 		output_map=output_map,
 		algo=algo,
 		max_time=Inf,
-		max_penalty_evals=200,
+		max_penalty_evals=1000,
 		seed=0,
 	)
 
@@ -436,7 +440,7 @@ let
 		output_map=output_map,
 		algo=algo,
 		max_time=Inf,
-		max_penalty_evals=200,
+		max_penalty_evals=1000,
 		seed=0,
 		latent_dim=3
 	)
@@ -446,7 +450,7 @@ let
 		output_map=output_map,
 		algo=algo,
 		max_time=Inf,
-		max_penalty_evals=200,
+		max_penalty_evals=1000,
 		seed=0,
 		latent_dim=3
 	)
@@ -457,12 +461,19 @@ let
 		output_map=output_map,
 		algo=algo,
 		max_time=Inf,
-		max_penalty_evals=200,
+		max_penalty_evals=1000,
 		seed=0,
 	)
 
+	@time res_cmaes = smt_cmaes(ds, model_base, x0, repeat(zeros(3), sum(opt_steps)), repeat([1], sum(opt_steps)), smt_safety, smt_terminal;
+		u_len=u_len,
+		output_map=output_map,
+		latent_dim=3,
+		iterations=200,
+		rng=Random.MersenneTwister(0),
+	)
 
-	(res_unitinv.evals_to_zero_penalty, res_base.evals_to_zero_penalty, res_base_long.evals_to_zero_penalty, res_unitinv_long.evals_to_zero_penalty)
+	(res_unitinv.evals_to_zero_penalty, res_base.evals_to_zero_penalty, res_base_long.evals_to_zero_penalty, res_unitinv_long.evals_to_zero_penalty, res_cmaes), x0
 end
 
 # ╔═╡ Cell order:

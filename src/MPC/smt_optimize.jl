@@ -53,6 +53,39 @@ function smt_optimize_latent(ds::DiscreteRandomSystem,
                              u_len=nothing,
                              output_map::Function=identity,
                              latent_dim::Union{Nothing,Integer}=nothing)
+    if algo == :GN_CMAES
+        iter = max_penalty_evals > 0 ? Int(max_penalty_evals) : 200
+        rng_local = Random.MersenneTwister(seed)
+        z0_cmaes = Float32.(z0 isa AbstractVector ? z0 : vec(z0))
+        res_cmaes = smt_cmaes(ds, model, x0, z0_cmaes, steps,
+                              safety_output, terminal_output;
+                              u_len=u_len,
+                              safety_input=safety_input,
+                              latent_dim=latent_dim,
+                              output_map=output_map,
+                              iterations=iter,
+                              rng=rng_local)
+        best = smt_penalty(ds, model, x0, Float32.(res_cmaes.z), steps,
+                           safety_output, terminal_output;
+                           safety_input=safety_input,
+                           u_len=u_len,
+                           output_map=output_map,
+                           latent_dim=latent_dim)
+        evals_zero = if res_cmaes.objective <= 0
+            hasproperty(res_cmaes.result, :f_calls) ? Float64(getproperty(res_cmaes.result, :f_calls)) : Inf
+        else
+            Inf
+        end
+        return (; objective=Float64(res_cmaes.objective),
+                 objective_time_bounded=Float64(res_cmaes.objective),
+                 z_time_bounded=Float64.(res_cmaes.z),
+                 evals_to_zero=evals_zero,
+                 evals_to_zero_penalty=evals_zero,
+                 z=Float64.(res_cmaes.z),
+                 result=res_cmaes.result,
+                 output_trajectory=best.output_trajectory,
+                 input_trajectory=best.input_trajectory)
+    end
     steps_vec = steps isa Integer ? [Int(steps)] : Int.(collect(steps))
     length(steps_vec) >= 1 || throw(ArgumentError("steps must contain at least one segment"))
 

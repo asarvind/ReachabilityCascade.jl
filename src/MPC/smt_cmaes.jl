@@ -84,6 +84,7 @@ function smt_cmaes(ds::DiscreteRandomSystem,
                    parallelization::Symbol=:serial)
     safety_input_eff = safety_input === nothing ? _input_bounds_constraints(ds) : safety_input
 
+    z0_vec = Float64.(z0 isa AbstractVector ? z0 : vec(z0))
     obj = z -> begin
         res = trajectory(ds, model, x0, z, steps;
                          u_len=u_len,
@@ -105,16 +106,16 @@ function smt_cmaes(ds::DiscreteRandomSystem,
             end
         end
 
-        _smt_penalty(safety_output_vals) +
-            _smt_penalty(safety_input_vals) +
-            _eventual_penalty(terminal_output, ytrj)
+        Float64(_smt_penalty(safety_output_vals) +
+                _smt_penalty(safety_input_vals) +
+                _eventual_penalty(terminal_output, ytrj))
     end
 
     opts = Evolutionary.Options(iterations=Int(iterations),
                                 rng=rng,
                                 parallelization=parallelization)
     method = CMAES(mu=Int(mu), lambda=Int(lambda), sigma0=sigma0)
-    result = Evolutionary.optimize(obj, z0, method, opts)
+    result = Evolutionary.optimize(obj, z0_vec, method, opts)
     z_best = Evolutionary.minimizer(result)
     cost = Evolutionary.minimum(result)
     return (; z=Float32.(z_best), objective=cost, result=result)

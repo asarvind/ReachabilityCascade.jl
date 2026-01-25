@@ -407,8 +407,8 @@ let
 	opt_steps = opt_steps_vec[opt_steps_id]
 	steps = sum(opt_steps)
 
-	# algo = :LN_BOBYQA
-	algo = :LD_SLSQP
+	algo = :LN_BOBYQA
+	# algo = :LD_SLSQP
 	# algo = :GN_CMAES
 
 	model_base = (x, z) -> z

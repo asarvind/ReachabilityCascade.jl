@@ -210,6 +210,9 @@ Receding-horizon MPC that minimizes the SMT cost at each step using
 - `u_len=nothing`: control dimension; inferred from `ds.U` if omitted.
 - `latent_dim=nothing`: required only when `model` is a function.
 - `output_map=identity`: mapping from state to output used for SMT evaluation.
+- `noise_fn=nothing`: optional noise sampler `noise_fn(rng) -> u_noise`. Defaults to `rng -> LazySets.sample(ds.U; rng=rng)`.
+- `noise_weight=0.0`: mixing weight between decoded control and noise.
+- `noise_rng=Random.default_rng()`: RNG passed to `noise_fn` for reproducibility.
 
 # Returns
 Named tuple:
@@ -218,6 +221,7 @@ Named tuple:
 - `input_trajectory`: input matrix `u_len×steps_total`.
 - `objectives`: vector of per-step SMT objectives.
 - `objective_total`: SMT objective over the full MPC rollout.
+- `u_noises`: matrix `u_len×steps_total` of the sampled noise vectors used at each step.
 - `z`: final latent vector (flat) from the last optimization.
 """
 function smt_mpc(ds::DiscreteRandomSystem,
@@ -236,13 +240,23 @@ function smt_mpc(ds::DiscreteRandomSystem,
                  max_penalty_evals::Integer=0,
                  u_len=nothing,
                  latent_dim::Union{Nothing,Integer}=nothing,
-                 output_map::Function=identity)
+                 output_map::Function=identity,
+                 noise_fn::Union{Function,Nothing}=nothing,
+                 noise_weight::Real=0.0,
+                 noise_rng::Random.AbstractRNG=Random.default_rng())
     steps_total = steps isa Integer ? Int(steps) : sum(Int.(collect(steps)))
     steps_total >= 1 || throw(ArgumentError("steps must be ≥ 1 (or sum to ≥ 1)"))
 
     u_len_final = _infer_u_len(ds, u_len)
     opt_steps_vec = opt_steps isa Integer ? [Int(opt_steps)] : Int.(collect(opt_steps))
     length(opt_steps_vec) >= 1 || throw(ArgumentError("opt_steps must contain at least one segment"))
+
+    nf = if noise_fn === nothing
+        hasproperty(ds, :U) || throw(ArgumentError("noise_fn must be provided when ds has no field U"))
+        rng -> LazySets.sample(ds.U; rng=rng)
+    else
+        noise_fn
+    end
 
     model_eff = if model isa Function
         latent_dim === nothing && throw(ArgumentError("latent_dim must be provided when model is a function"))
@@ -258,6 +272,7 @@ function smt_mpc(ds::DiscreteRandomSystem,
     x0_vec = x0 isa AbstractVector ? x0 : vec(x0)
     strj = reshape(x0_vec, :, 1)
     utrj = Matrix{Float32}(undef, u_len_final, 0)
+    u_noises = Matrix{Float32}(undef, u_len_final, 0)
     objectives = Float64[]
 
     for _ in 1:steps_total
@@ -277,9 +292,16 @@ function smt_mpc(ds::DiscreteRandomSystem,
 
         u = control_from_latent(model_eff, z[1:_latent_dim(model_eff)], x; u_len=u_len_final)
         u_used = Float32.(u isa AbstractVector ? u : vec(u))
-        utrj = hcat(utrj, u_used[1:u_len_final])
+        u_noise = nf(noise_rng)
+        u_noise_vec = u_noise isa AbstractVector ? u_noise : vec(u_noise)
+        length(u_noise_vec) >= u_len_final ||
+            throw(DimensionMismatch("noise_fn must return at least $u_len_final elements; got length=$(length(u_noise_vec))"))
+        u_noise_used = Float32.(u_noise_vec[1:u_len_final])
+        u_noises = hcat(u_noises, u_noise_used)
+        u_mix = u_used[1:u_len_final] * (1 - noise_weight) + u_noise_used * noise_weight
+        utrj = hcat(utrj, u_mix)
 
-        x_next = ds(x, u_used[1:u_len_final])
+        x_next = ds(x, u_mix)
         strj = hcat(strj, x_next)
     end
 
@@ -308,6 +330,7 @@ function smt_mpc(ds::DiscreteRandomSystem,
              input_trajectory=utrj,
              objectives,
              objective_total,
+             u_noises,
              z)
 end
 

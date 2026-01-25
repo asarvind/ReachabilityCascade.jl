@@ -31,7 +31,7 @@ end
 		import ReachabilityCascade.CarDynamics: discrete_vehicles
 		import ReachabilityCascade: DiscreteRandomSystem, InvertibleCoupling, NormalizingFlow
 		import ReachabilityCascade.InvertibleGame: inclusion_losses, decode, load_self
-		import ReachabilityCascade.MPC: trajectory, optimize_latent, mpc, smt_milp_iterative, smt_milp_receding, smt_cmaes, smt_mpc, smt_optimize_latent
+		import ReachabilityCascade: trajectory, optimize_latent, mpc
 		import ReachabilityCascade.TrainingAPI: build, load
 	end
 	
@@ -390,7 +390,7 @@ function thiscost(x::AbstractMatrix)
 	return vcat(bc, fc, oc, tc)
 end
 
-# ╔═╡ d4b1f290-b47b-4c9d-8420-845bcb9bf163
+# ╔═╡ b1c6b6c8-70d8-4b0d-9d62-1d5c9c0e6d8f
 """
 Return SMT safety and goal formulas equivalent to `thiscost`.
 
@@ -450,7 +450,7 @@ let
 	data = JLD2.load("data/car/trajectories.jld2", "data")
 	overtake_idx = [d.state_trajectory[1, end] - d.state_trajectory[8, end] > 0 && d.state_trajectory[1, 1] < d.state_trajectory[8, 1] for d in data]
 	overtake_data = data[overtake_idx]
-	save_game = "data/car/unitinvert/selfInitSeed200Iter0Epoch45EmaL0U999R1f4Latseed1.jld2"
+	save_game = "data/car/unitinvert/selfInitSeed2000Iter0Epoch45EmaL0U999R1f4Latseed1.jld2"
 	save_flow = "data/car/flowmodels/flowInitSeed2000Iter0Epoch45.jld2"
 	model_a, _ = load_self(save_game)
 	model_flow = load(NormalizingFlow, save_flow)
@@ -466,67 +466,25 @@ let
 	# steps = [15, 28 - start_time - 15 + 1]
 	steps = 28
 
-	algo = :LN_BOBYQA
-	max_time = 0.1
+	algo = :LN_PRAXIS
+	max_time = 0.02
 
 	noise_rng_flow = MersenneTwister(rand(1:10000))
 	noise_rng_game_a = deepcopy(noise_rng_flow)
 	noise_rng_game_b = deepcopy(noise_rng_flow)
 
 	drift_steps = 2
-	res_drift = mpc(thiscost, ds, x0, model_flow, drift_steps; algo=:LN_BOBYQA, max_time=max_time, noise_weight=0.2, noise_rng=noise_rng_game_b, opt_steps=[14, 14], opt_seed=1)
+	res_drift = mpc(thiscost, ds, x0, model_flow, drift_steps; algo=algo, max_time=max_time, noise_weight=0.2, noise_rng=noise_rng_game_b, opt_steps=[14, 14], opt_seed=1)
 	x_drift = res_drift.trajectory[:, drift_steps]
-	x_drift = x0
+	# x_drift = x0
 
-	# res_game_a = mpc(thiscost, ds, x_drift, [model_a], 20; algo=algo, max_time=max_time, noise_weight=0.0, noise_rng=noise_rng_game_a, opt_steps=[28], opt_seed=1)
+	res_game_a = mpc(thiscost, ds, x_drift, [model_a], 20; algo=algo, max_time=max_time, noise_weight=0.0, noise_rng=noise_rng_game_a, opt_steps=[28], opt_seed=1)
 
 	# res_game_b = mpc(thiscost, ds, x0, model_b, 20; algo=algo, max_time=max_time, noise_weight=0.2, noise_rng=noise_rng_game_b, opt_steps=[10, 10], opt_seed=1)
 
-	# res_flow = mpc(thiscost, ds, x_drift, model_flow, 28; algo=algo, max_time=max_time, noise_weight=0.0, noise_rng=noise_rng_flow, opt_steps=[28], opt_seed=1)
+	res_flow = mpc(thiscost, ds, x_drift, model_flow, 28; algo=algo, max_time=max_time, noise_weight=0.0, noise_rng=noise_rng_flow, opt_steps=[28], opt_seed=1)
 
-	opt_steps = [28]
-	u_len = 2
-
-	smt_safety, smt_goal = thiscost_smt()
-
-	@time res_unitinv = smt_optimize_latent(ds, model_a, x_drift, repeat(zeros(2), length(opt_steps)), opt_steps, smt_safety, smt_goal;
-		u_len=u_len,
-		algo=:LN_BOBYQA,
-		max_time=Inf,
-		max_penalty_evals=1000,
-		seed=0,
-	)
-
-	@time res_unitinv_long = smt_optimize_latent(ds, model_a, x_drift, repeat(zeros(2), sum(opt_steps)), repeat([1], sum(opt_steps)), smt_safety, smt_goal;
-		u_len=u_len,
-		algo=:LN_BOBYQA,
-		max_time=Inf,
-		max_penalty_evals=1000,
-		seed=0,
-	)
-
-	mpc_res_unitinv = smt_mpc(ds, model_a, x_drift, sum(opt_steps), smt_safety, smt_goal;
-		u_len=u_len,
-		opt_steps=opt_steps,
-		max_time=Inf,
-		max_penalty_evals=20,
-		opt_seed=0,
-		latent_dim=2,
-		algo=algo,
-		init_z=zeros(2)
-	)
-
-	mpc_res_unitinv_long = smt_mpc(ds, model_a, x_drift, sum(opt_steps), smt_safety, smt_goal;
-		u_len=u_len,
-		opt_steps=repeat([1], sum(opt_steps)),
-		max_time=Inf,
-		max_penalty_evals=20,
-		opt_seed=0,
-		latent_dim=2,
-		algo=algo
-	)
-
-	mpc_res_unitinv, mpc_res_unitinv_long
+	res_game_a, res_flow
 end
 
 # ╔═╡ 39a52a27-dd19-446e-9f43-520b170bac8c
@@ -632,6 +590,5 @@ end
 # ╠═5a9f6a0a-9a6a-4d21-ae4b-67d122a2b2b3
 # ╠═fdbb52af-2e55-4a09-9b9b-7a0bdb9f4c67
 # ╠═580a6ae6-5f95-4ec2-ab9d-b5f6d48d330b
-# ╠═d4b1f290-b47b-4c9d-8420-845bcb9bf163
 # ╠═730088b2-08f0-400b-98f2-5298ab5b9eb5
 # ╠═39a52a27-dd19-446e-9f43-520b170bac8c

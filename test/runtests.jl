@@ -1,7 +1,6 @@
 using Test
 using ReachabilityCascade
 
-include("SequenceTransform/sequencetransform_tests.jl")
 #
 # TrajectoryRefiner tests removed.
 #

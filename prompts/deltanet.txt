@@ -29,7 +29,5 @@ The neural network consists of two blocks: Intermediate correction block and Ter
 
 **Implementation Details:**
 - Create a separate folder `src/TrajectoryRefiner/`.
-- Use the `SequenceTransformation` network for processing sequences.
-- Use `x_0` as a context vector for the `SequenceTransformation`.
 - Concatenate `x_res`, `x_guess`, `u_guess` as input features for the networks.
 - Organize into appropriate files with clear variable names.

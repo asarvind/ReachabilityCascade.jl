@@ -88,21 +88,6 @@ module CarDataGeneration
 end
 
 #############
-# Sequence transforms
-#############
-module SequenceTransform
-    using Flux
-    using ..GatedLinearUnits: glu_mlp
-
-    export SequenceTransformation, AttentionFFN
-
-    include("SequenceTransform/attention.jl")
-    include("SequenceTransform/transformation.jl")
-end
-using .SequenceTransform
-export SequenceTransformation, AttentionFFN
-
-#############
 # Normalizing flows
 #############
 module NormalizingFlows

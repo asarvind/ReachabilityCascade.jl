@@ -77,6 +77,13 @@ module Robot3DOF
     export robot3dof_field, joint_positions, discrete_robot3dof
 end
 
+module QuadDynamics
+    using LazySets
+    using ..ControlSystem: ContinuousSystem, DiscreteRandomSystem
+    include("examples/quadcopter/dynamics.jl")
+    export quadfield, discrete_quadcopter_ref
+end
+
 module CarDataGeneration
     using LazySets, JuMP, LinearAlgebra, HiGHS, JLD2
     using ..ControlSystem: DiscreteRandomSystem

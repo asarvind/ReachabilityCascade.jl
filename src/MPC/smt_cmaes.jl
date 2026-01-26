@@ -28,6 +28,27 @@ _eventual_penalty(terminal_output::AbstractVector{<:AbstractMatrix},
     return max(0.0f0, best)
 end
 
+_eventual_penalty_time(terminal_output::AbstractVector{<:AbstractMatrix},
+                       ytrj::AbstractMatrix{<:Real}) = begin
+    best = Inf32
+    best_t = 1
+    for t in 1:size(ytrj, 2)
+        worst = -Inf32
+        for mat in terminal_output
+            vals = _matrix_row_values(mat, ytrj[:, t])
+            score = minimum(Float32.(vals))
+            if score > worst
+                worst = score
+            end
+        end
+        if worst < best
+            best = worst
+            best_t = t
+        end
+    end
+    return max(0.0f0, best), best_t
+end
+
 """
     smt_cmaes(ds, model, x0, z0, steps,
               safety_output, terminal_output; kwargs...) -> result

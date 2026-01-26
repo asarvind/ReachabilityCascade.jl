@@ -36,6 +36,8 @@ Named tuple:
 - `result`: NLopt return code.
 - `output_trajectory`: output trajectory for the best `z`.
 - `input_trajectory`: input trajectory for the best `z`.
+- `eventual_time_safe`: earliest time index where terminal constraints are met, if
+  safety constraints are satisfied over the full horizon; `Inf` otherwise.
 """
 function smt_optimize_latent(ds::DiscreteRandomSystem,
                              model,
@@ -84,7 +86,8 @@ function smt_optimize_latent(ds::DiscreteRandomSystem,
                  z=Float64.(res_cmaes.z),
                  result=res_cmaes.result,
                  output_trajectory=best.output_trajectory,
-                 input_trajectory=best.input_trajectory)
+                 input_trajectory=best.input_trajectory,
+                 eventual_time_safe=best.eventual_time_safe)
     end
     steps_vec = steps isa Integer ? [Int(steps)] : Int.(collect(steps))
     length(steps_vec) >= 1 || throw(ArgumentError("steps must contain at least one segment"))
@@ -180,7 +183,8 @@ function smt_optimize_latent(ds::DiscreteRandomSystem,
              z=min_z,
              result=ret,
              output_trajectory=best.output_trajectory,
-             input_trajectory=best.input_trajectory)
+             input_trajectory=best.input_trajectory,
+             eventual_time_safe=best.eventual_time_safe)
 end
 
 """
@@ -363,6 +367,8 @@ Named tuple:
 - `grad`: gradient vector (or `nothing` when `return_grad=false`).
 - `output_trajectory`: output trajectory matrix (columns over time).
 - `input_trajectory`: input trajectory matrix.
+- `eventual_time_safe`: earliest time index where terminal constraints are met, if
+  safety constraints are satisfied over the full horizon; `Inf` otherwise.
 """
 function smt_penalty(ds::DiscreteRandomSystem,
                      model,
@@ -416,18 +422,43 @@ function smt_penalty(ds::DiscreteRandomSystem,
             end
         end
 
-        penalty = _smt_penalty(safety_output_vals) +
-                  _smt_penalty(safety_input_vals) +
-                  _eventual_penalty(terminal_output, ytrj)
-        return penalty, ytrj, utrj
+        safety_penalty = _smt_penalty(safety_output_vals) +
+                         _smt_penalty(safety_input_vals)
+
+        best = Inf32
+        best_t = 1
+        first_satisfied = Inf32
+        for t in 1:size(ytrj, 2)
+            worst = -Inf32
+            for mat in terminal_output
+                vals = _matrix_row_values(mat, ytrj[:, t])
+                score = minimum(Float32.(vals))
+                if score > worst
+                    worst = score
+                end
+            end
+            if worst < best
+                best = worst
+                best_t = t
+            end
+            if worst <= 0 && isinf(first_satisfied)
+                first_satisfied = Float32(t)
+            end
+        end
+        terminal_penalty = max(0.0f0, best)
+        eventual_time_safe = safety_penalty == 0 ? (isinf(first_satisfied) ? Inf32 : first_satisfied) : Inf32
+
+        penalty = safety_penalty + terminal_penalty
+        return penalty, ytrj, utrj, eventual_time_safe
     end
 
-    penalty0, ytrj0, utrj0 = penalty_for(z_vec)
+    penalty0, ytrj0, utrj0, eventual_time_safe0 = penalty_for(z_vec)
     if !return_grad
         return (; penalty=penalty0,
                  grad=nothing,
                  output_trajectory=ytrj0,
-                 input_trajectory=utrj0)
+                 input_trajectory=utrj0,
+                 eventual_time_safe=eventual_time_safe0)
     end
 
     eps = Float32(grad_eps)
@@ -435,7 +466,7 @@ function smt_penalty(ds::DiscreteRandomSystem,
     z_work = Float32.(z_vec)
     for i in eachindex(z_work)
         z_work[i] += eps
-        penalty_i, _, _ = penalty_for(z_work)
+        penalty_i, _, _, _ = penalty_for(z_work)
         grad[i] = (Float32(penalty_i) - Float32(penalty0)) / eps
         z_work[i] -= eps
     end
@@ -443,5 +474,6 @@ function smt_penalty(ds::DiscreteRandomSystem,
     return (; penalty=penalty0,
              grad,
              output_trajectory=ytrj0,
-             input_trajectory=utrj0)
+             input_trajectory=utrj0,
+             eventual_time_safe=eventual_time_safe0)
 end

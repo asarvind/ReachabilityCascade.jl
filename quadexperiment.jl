@@ -393,8 +393,8 @@ let
 	res_file = "data/quadcopter/results/Seed2000AlgoSLSQP.jld2"
 	rng = MersenneTwister(2000)
 
-	# algo = :LN_BOBYQA
-	algo = :LD_SLSQP
+	algo = :LN_BOBYQA
+	# algo = :LD_SLSQP
 
 	result = []
 	count = 0
@@ -464,9 +464,17 @@ let
 		end
 	end
 
-	JLD2.save(res_file, "result", result)
+	if !isempty(res_file) && max_count >= 100
+		JLD2.save(res_file, "result", result)
+	end
 
 	result
+end
+
+# ╔═╡ d5e32a34-69f7-44f3-8daa-cdbc8c6acf5b
+let
+	v = JLD2.load("data/quadcopter/results/Seed2AlgoBOBYQA.jld2", "result")
+	sort([r[2] - r[1] for r in v])
 end
 
 # ╔═╡ Cell order:
@@ -479,3 +487,4 @@ end
 # ╠═1c2a3c8b-5a48-4df5-8c2f-1c6299c2c9d3
 # ╠═881c409b-ff14-46bd-9ec9-0ef123dda852
 # ╠═586f0b4f-f224-461e-bf5c-833a71771343
+# ╠═d5e32a34-69f7-44f3-8daa-cdbc8c6acf5b

@@ -448,7 +448,7 @@ let
 
 	result = []
 	count = 0
-	max_count = 100
+	max_count = 0
 
 	while count <= max_count
 		opt_steps_list = [[40], [20, 20], [14, 14, 12]]
@@ -510,7 +510,9 @@ let
 		end
 	end
 
-	JLD2.save(res_file, "result", result)
+	if !isempty(res_file) && max_count >= 100
+		JLD2.save(res_file, "result", result)
+	end
 
 	result
 end

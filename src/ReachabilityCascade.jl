@@ -42,6 +42,15 @@ using .Sampling: grid_serpentine
 export grid_serpentine
 
 #############
+# Plot utilities
+#############
+module PlotUtils
+    include("PlotUtils/quantiles.jl")
+end
+using .PlotUtils: quantile_plot
+export quantile_plot
+
+#############
 # Neural blocks
 #############
 module GatedLinearUnits

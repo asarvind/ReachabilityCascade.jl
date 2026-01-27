@@ -305,7 +305,7 @@ let
 
 	result = []
 	count = 0
-	max_count = 100
+	max_count = 0
 
 	while count <= max_count
 		opt_steps_list = [[21], [20, 11], [7, 7, 7]]
@@ -358,9 +358,17 @@ let
 		end
 	end
 
-	JLD2.save(res_file, "result", result)
+	if !(isempty(res_file)) && max_count >= 100
+		JLD2.save(res_file, "result", result)
+	end
 
 	result
+end
+
+# ╔═╡ d1a37014-5d08-41a1-a17c-de2a4339d738
+let
+	v = JLD2.load("data/car/results/Seed2000AlgoBOBYQA.jld2", "result")
+	sort([r[3] - r[1] for r in v])
 end
 
 # ╔═╡ Cell order:
@@ -371,3 +379,4 @@ end
 # ╠═d7873320-cce3-478b-8fa7-93b1063eb0c4
 # ╠═d4b1f290-b47b-4c9d-8420-845bcb9bf163
 # ╠═730088b2-08f0-400b-98f2-5298ab5b9eb5
+# ╠═d1a37014-5d08-41a1-a17c-de2a4339d738

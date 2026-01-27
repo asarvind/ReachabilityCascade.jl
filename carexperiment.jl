@@ -23,24 +23,16 @@ end
 	begin
 		
 		using Random, LinearAlgebra
-		import NLopt
-		using Flux, Enzyme
-		import JLD2
-		import LazySets
+		import NLopt, LazySets, JLD2
+		using Flux
 		import LazySets: center, radius_hyperrectangle
 		import ReachabilityCascade.CarDynamics: discrete_vehicles
-		import ReachabilityCascade: DiscreteRandomSystem, InvertibleCoupling, NormalizingFlow
-		import ReachabilityCascade.InvertibleGame: inclusion_losses, decode, load_self
-		import ReachabilityCascade.MPC: trajectory, optimize_latent, mpc, smt_milp_iterative, smt_milp_receding, smt_cmaes, smt_mpc, smt_optimize_latent
+		import ReachabilityCascade: DiscreteRandomSystem, InvertibleCoupling
+		import ReachabilityCascade.MPC: trajectory, smt_mpc, smt_optimize_latent
 		import ReachabilityCascade.TrainingAPI: build, load
+		import ReachabilityCascade.InvertibleGame: load_self
 	end
 	
-
-# ╔═╡ 9a1f6973-1363-4207-8a8f-713a47d253ce
-	# These helpers live in the package now:
-	# - `ReachabilityCascade.trajectory`
-	# - `ReachabilityCascade.optimize_latent`
-	# - `ReachabilityCascade.mpc`
 
 # ╔═╡ d0fc8b98-37ca-4a26-8289-2b408846f7b6
 	begin
@@ -235,161 +227,6 @@ let
 		
 end
 
-# ╔═╡ 3b6f10e2-41c2-4b5a-9e63-5c15b0f8e5a1
-let
-	# NormalizingFlow baseline (trained on the same dataset/iterator format).
-	#
-	# NOTE: `epochs=0` means this cell will just load from `load_path_flow` (if present) and save to `save_path_flow`.
-	# Set `epochs>0` when you actually want to train.
-
-	# Dataset format example: `data/car/trajectories.jld2` (key "data").
-	# This follows the same overtake-data filter used in `vehiclepluto.jl`.
-	data = JLD2.load("data/car/trajectories.jld2", "data")
-	overtake_idx = [d.state_trajectory[1, end] - d.state_trajectory[8, end] > 0 for d in data]
-	overtake_data = data[overtake_idx]
-
-	# ----------------------------
-	# NormalizingFlow args (match InvertibleCoupling config)
-	# ----------------------------
-	spec = [128 128 128;
-	        1   1   1;
-	        1   1   1]
-	logscale_clamp = 2.0
-
-	# ----------------------------
-	# Training args (match InvertibleCoupling config)
-	# ----------------------------
-	epochs = 0
-	batch_size = 100
-	opt = Flux.OptimiserChain(Flux.ClipGrad(), Flux.ClipNorm(), Flux.Adam(1f-4))
-	save_period = 60.0
-
-	# DATA SLICE: edit this to control how much data is used for training.
-	# Keep this small while sanity-checking the notebook (the dataset is large).
-	thisdata = overtake_data[1:end]
-
-	save_path_flow = "data/car/temp/normalizingflow.jld2"
-	load_path_flow = save_path_flow
-
-	# Separate iterator instance so (when `epochs>0`) both trainings can be reproducible independently.
-	# Use the same iterator RNG seed as the InvertibleCoupling training cell for reproducibility.
-	it_flow = CarFlowIterator(thisdata; rng=Random.MersenneTwister(0))
-
-	flow, losses_flow = build(NormalizingFlow, it_flow;
-		spec=spec,
-		logscale_clamp=logscale_clamp,
-		# Use a fixed init RNG (same seed as `rng_a` in the InvertibleCoupling cell) for reproducibility.
-		rng=Random.MersenneTwister(2000),
-		epochs=epochs,
-		batch_size=batch_size,
-		opt=opt,
-		use_memory=false,
-		save_path=save_path_flow,
-		load_path=load_path_flow,
-		save_period=save_period,
-	)
-
-	(; losses_flow)
-end
-
-# ╔═╡ 5a9f6a0a-9a6a-4d21-ae4b-67d122a2b2b3
-begin
-	"""
-	    CarFlowSequentialIterator(data; idxs=1:length(data))
-
-	Sequential iterator over *all* `(state, input)` pairs in a trajectory dataset.
-
-This iterator assumes `data` is an indexable collection (e.g. vector) whose elements provide:
-- `sample.state_trajectory`: a `state_dim × (T+1)` (or `state_dim × T`) array-like object.
-- `sample.input_signal`: an `input_dim × T` array-like object.
-
-For each trajectory, we iterate time indices `t = 1:T` in order and return a named tuple:
-`(; context, sample)` where:
-- `context` is the state vector `state_trajectory[:, t]`
-- `sample` is the control vector `input_signal[:, t]`
-
-Notes
-- This iterator does *not* skip any time indices (unlike the random sampler used during training).
-- It is re-iterable: `Base.iterate(it)` always starts from the first trajectory and `t=1`.
-	"""
-	struct CarFlowSequentialIterator
-		data
-		idxs::Vector{Int}
-	end
-
-	function CarFlowSequentialIterator(data; idxs=1:length(data))
-		return CarFlowSequentialIterator(data, collect(Int, idxs))
-	end
-end
-
-# ╔═╡ fdbb52af-2e55-4a09-9b9b-7a0bdb9f4c67
-begin
-	function Base.iterate(it::CarFlowSequentialIterator, state=nothing)
-		# State holds:
-		# - traj_pos: position in `it.idxs`
-		# - t: time index within the current trajectory
-		# - X, U, T: cached arrays for the current trajectory to avoid re-loading every step
-		if state === nothing
-			traj_pos = 1
-			traj_pos > length(it.idxs) && return nothing
-			d = it.data[it.idxs[traj_pos]]
-			X = Array(d.state_trajectory)
-			U = Array(d.input_signal)
-			T = size(U, 2)
-			T >= 1 || throw(ArgumentError("input_signal must have at least one column; got size=$(size(U))"))
-			size(X, 2) >= T ||
-			    throw(DimensionMismatch("state_trajectory must have at least T=$T columns; got size=$(size(X))"))
-			state = (traj_pos=traj_pos, t=1, X=X, U=U, T=T)
-		end
-
-		traj_pos = state.traj_pos
-		t = state.t
-		X = state.X
-		U = state.U
-		T = state.T
-
-		# If this trajectory is done, advance to the next trajectory and reset t.
-		while t > T
-			traj_pos += 1
-			traj_pos > length(it.idxs) && return nothing
-			d = it.data[it.idxs[traj_pos]]
-			X = Array(d.state_trajectory)
-			U = Array(d.input_signal)
-			T = size(U, 2)
-			T >= 1 || throw(ArgumentError("input_signal must have at least one column; got size=$(size(U))"))
-			size(X, 2) >= T ||
-			    throw(DimensionMismatch("state_trajectory must have at least T=$T columns; got size=$(size(X))"))
-			t = 1
-		end
-
-		context = Vector(X[:, t])
-		sample = Vector(U[:, t])
-
-		next_state = (traj_pos=traj_pos, t=t + 1, X=X, U=U, T=T)
-		return ((; context=context, sample=sample), next_state)
-	end
-end
-
-# ╔═╡ 580a6ae6-5f95-4ec2-ab9d-b5f6d48d330b
-function thiscost(x::AbstractMatrix)
-	ds = discrete_vehicles(0.25)
-
-	# bounds cost 
-	bc = Flux.relu(abs.(x .- center(ds.X)) .- radius_hyperrectangle(ds.X))
-
-	# forward collision cost
-	fc = Flux.relu(min.(5.0 .- abs.(x[8:8, :] - x[1:1, :]), 2.0 .+ x[9:9, :] - x[2:2, :]))
-
-	# oncoming collision cost
-	oc = Flux.relu(min.(5.0 .- abs.(x[11:11, :] - x[1:1, :]), 2.0 .+ x[2:2, :] - x[12:12, :]))
-
-	# terminal cost
-	tc = fill(Flux.relu(x[8, end] - x[1, end] + 3.0), 1, size(x, 2))
-	# tc = vcat(tc, fill(Flux.relu(x[2, end] - 3.0), 1, size(x, 2)))
-
-	return vcat(bc, fc, oc, tc)
-end
-
 # ╔═╡ d4b1f290-b47b-4c9d-8420-845bcb9bf163
 """
 Return SMT safety and goal formulas equivalent to `thiscost`.
@@ -404,34 +241,37 @@ function thiscost_smt()
 	n = length(xc)
 
 	# Bounds: |x - xc| <= xr  =>  (x - xc - xr <= 0) AND (-x + xc - xr <= 0)
-	bounds_rows = Matrix{Float32}(undef, 2n, n + 1)
+	# Each row is its own matrix so the AND semantics are preserved.
+	bounds_rows = Matrix{Float32}[]
 	for i in 1:n
 		row_hi = zeros(Float32, n + 1)
 		row_hi[i] = 1.0f0
 		row_hi[end] = -Float32(xc[i] + xr[i])
-		bounds_rows[2i - 1, :] = row_hi
+		push!(bounds_rows, reshape(row_hi, 1, :))
 
 		row_lo = zeros(Float32, n + 1)
 		row_lo[i] = -1.0f0
 		row_lo[end] = Float32(xc[i] - xr[i])
-		bounds_rows[2i, :] = row_lo
+		push!(bounds_rows, reshape(row_lo, 1, :))
 	end
 
 	# Forward collision:
 	# min(5 - |x8 - x1|, 2 + x9 - x2) <= 0
 	# => OR over: (x8 - x1 - 5 >= 0) OR (x1 - x8 - 5 >= 0) OR (x2 - x9 - 2 >= 0)
 	fc = zeros(Float32, 3, n + 1)
-	fc[1, 8] = 1.0f0;  fc[1, 1] = -1.0f0; fc[1, end] = -5.0f0
-	fc[2, 1] = 1.0f0;  fc[2, 8] = -1.0f0; fc[2, end] = -5.0f0
-	fc[3, 2] = 1.0f0;  fc[3, 9] = -1.0f0; fc[3, end] = -2.0f0
+	# Encode each >= 0 as <= 0 by multiplying by -1.
+	fc[1, 8] = -1.0f0; fc[1, 1] = 1.0f0;  fc[1, end] = 5.0f0
+	fc[2, 1] = -1.0f0; fc[2, 8] = 1.0f0;  fc[2, end] = 5.0f0
+	fc[3, 2] = -1.0f0; fc[3, 9] = 1.0f0;  fc[3, end] = 2.0f0
 
 	# Oncoming collision:
 	# min(5 - |x11 - x1|, 2 + x2 - x12) <= 0
 	# => OR over: (x11 - x1 - 5 >= 0) OR (x1 - x11 - 5 >= 0) OR (x12 - x2 - 2 >= 0)
 	oc = zeros(Float32, 3, n + 1)
-	oc[1, 11] = 1.0f0; oc[1, 1] = -1.0f0;  oc[1, end] = -5.0f0
-	oc[2, 1]  = 1.0f0; oc[2, 11] = -1.0f0; oc[2, end] = -5.0f0
-	oc[3, 12] = 1.0f0; oc[3, 2] = -1.0f0;  oc[3, end] = -2.0f0
+	# Encode each >= 0 as <= 0 by multiplying by -1.
+	oc[1, 11] = -1.0f0; oc[1, 1] = 1.0f0;  oc[1, end] = 5.0f0
+	oc[2, 1]  = -1.0f0; oc[2, 11] = 1.0f0; oc[2, end] = 5.0f0
+	oc[3, 12] = -1.0f0; oc[3, 2] = 1.0f0;  oc[3, end] = 2.0f0
 
 	# Goal (eventual): x8 - x1 + 3 <= 0  =>  x8 - x1 + 3 <= 0
 	goal = zeros(Float32, 1, n + 1)
@@ -439,7 +279,7 @@ function thiscost_smt()
 	goal[1, 1] = -1.0f0
 	goal[1, end] = 3.0f0
 
-	smt_safety = [bounds_rows, fc, oc]
+	smt_safety = vcat(bounds_rows, [fc, oc])
 	smt_goal = [goal]
 	return smt_safety, smt_goal
 end
@@ -450,188 +290,84 @@ let
 	data = JLD2.load("data/car/trajectories.jld2", "data")
 	overtake_idx = [d.state_trajectory[1, end] - d.state_trajectory[8, end] > 0 && d.state_trajectory[1, 1] < d.state_trajectory[8, 1] for d in data]
 	overtake_data = data[overtake_idx]
-	save_game = "data/car/unitinvert/selfInitSeed200Iter0Epoch45EmaL0U999R1f4Latseed1.jld2"
-	save_flow = "data/car/flowmodels/flowInitSeed2000Iter0Epoch45.jld2"
-	model_a, _ = load_self(save_game)
-	model_flow = load(NormalizingFlow, save_flow)
-	z = randn(2)
-	z = Float32.(z*rand() / norm(z, 1))
-	κ = x -> decode(model_a, z, x)
-	κ_z = x -> decode(model_a, z, x)
-	idtest = rand(1:length(overtake_data))
-	# idtest = 1
-	strj, utrj = overtake_data[idtest]
-	start_time = 1
-	x0 = strj[:, start_time]
-	# steps = [15, 28 - start_time - 15 + 1]
-	steps = 28
-
-	algo = :LN_BOBYQA
-	max_time = 0.1
-
-	noise_rng_flow = MersenneTwister(rand(1:10000))
-	noise_rng_game_a = deepcopy(noise_rng_flow)
-	noise_rng_game_b = deepcopy(noise_rng_flow)
-
-	drift_steps = 2
-	res_drift = mpc(thiscost, ds, x0, model_flow, drift_steps; algo=:LN_BOBYQA, max_time=max_time, noise_weight=0.2, noise_rng=noise_rng_game_b, opt_steps=[14, 14], opt_seed=1)
-	x_drift = res_drift.trajectory[:, drift_steps]
-	x_drift = x0
-
-	# res_game_a = mpc(thiscost, ds, x_drift, [model_a], 20; algo=algo, max_time=max_time, noise_weight=0.0, noise_rng=noise_rng_game_a, opt_steps=[28], opt_seed=1)
-
-	# res_game_b = mpc(thiscost, ds, x0, model_b, 20; algo=algo, max_time=max_time, noise_weight=0.2, noise_rng=noise_rng_game_b, opt_steps=[10, 10], opt_seed=1)
-
-	# res_flow = mpc(thiscost, ds, x_drift, model_flow, 28; algo=algo, max_time=max_time, noise_weight=0.0, noise_rng=noise_rng_flow, opt_steps=[28], opt_seed=1)
-
-	opt_steps = [28]
-	u_len = 2
-
+	save_game = "data/car/unitinvert/selfInitSeed2000Iter0Epoch45EmaL0U999R1f4Latseed1.jld2"
+	model_invunit, _ = load_self(save_game)
+	model_base = (x,z) -> z
 	smt_safety, smt_goal = thiscost_smt()
 
-	@time res_unitinv = smt_optimize_latent(ds, model_a, x_drift, repeat(zeros(2), length(opt_steps)), opt_steps, smt_safety, smt_goal;
-		u_len=u_len,
-		algo=:LN_BOBYQA,
-		max_time=Inf,
-		max_penalty_evals=1000,
-		seed=0,
-	)
+	res_file = "data/car/results/Seed2000AlgoBOBYQA.jld2"
+	rng = MersenneTwister(2000)
 
-	@time res_unitinv_long = smt_optimize_latent(ds, model_a, x_drift, repeat(zeros(2), sum(opt_steps)), repeat([1], sum(opt_steps)), smt_safety, smt_goal;
-		u_len=u_len,
-		algo=:LN_BOBYQA,
-		max_time=Inf,
-		max_penalty_evals=1000,
-		seed=0,
-	)
-
-	mpc_res_unitinv = smt_mpc(ds, model_a, x_drift, sum(opt_steps), smt_safety, smt_goal;
-		u_len=u_len,
-		opt_steps=opt_steps,
-		max_time=Inf,
-		max_penalty_evals=20,
-		opt_seed=0,
-		latent_dim=2,
-		algo=algo,
-		init_z=zeros(2)
-	)
-
-	mpc_res_unitinv_long = smt_mpc(ds, model_a, x_drift, sum(opt_steps), smt_safety, smt_goal;
-		u_len=u_len,
-		opt_steps=repeat([1], sum(opt_steps)),
-		max_time=Inf,
-		max_penalty_evals=20,
-		opt_seed=0,
-		latent_dim=2,
-		algo=algo
-	)
-
-	mpc_res_unitinv, mpc_res_unitinv_long
-end
-
-# ╔═╡ 39a52a27-dd19-446e-9f43-520b170bac8c
-let
-	ds = discrete_vehicles(0.25; dt=0.01)
-	data = JLD2.load("data/car/trajectories.jld2", "data")
-	overtake_idx = [d.state_trajectory[1, end] - d.state_trajectory[8, end] > 0 && d.state_trajectory[1, 1] < d.state_trajectory[8, 1] for d in data]
-	overtake_data = data[overtake_idx]
 	
-	invunit_path = "data/car/unitinvert/selfInitSeed200Iter0Epoch45EmaL0U999R1f4Latseed1.jld2"
-	flow_path = "data/car/flowmodels/flowInitSeed200Iter0Epoch45.jld2"
-	model_invunit, _ = load_self(invunit_path)
-	model_flow = load(NormalizingFlow, flow_path)
 
+	algo = :LN_BOBYQA
+	# algo = :LD_SLSQP
 
-	algo = :LN_COBYLA
+	result = []
+	count = 0
+	max_count = 100
+
+	while count <= max_count
+		opt_steps_list = [[21], [20, 11], [7, 7, 7]]
+		opt_steps_id = rand(rng, 1:3)
+		opt_steps = opt_steps_list[opt_steps_id]
+		u_len = 2
+
+		id_sample = rand(rng, 1:length(overtake_data))
+		strj, _ = overtake_data[id_sample]
+		x = strj[:, 1]
+
+		res_invunit = smt_optimize_latent(ds, model_invunit, x, repeat(zeros(2), length(opt_steps)), opt_steps, smt_safety, smt_goal;
+			u_len=u_len,
+			algo=algo,
+			max_time=Inf,
+			max_penalty_evals=500,
+			seed=0,
+		)
 	
-	drift_steps = 3
-
-	num_sim = 0
-
-	noise_rng = MersenneTwister(200)
-
-	cost_res = []
-
-	data_shuffled = shuffle(noise_rng, overtake_data)
-
-	save_res_path = "data/car/temp/resSeed200.jld2"
-
-	# max_time = 0.02
-	# opt_steps = [20]
-
-	start_time = time()
-	for i in 1:num_sim 
-		max_time = rand(noise_rng, [0.02, 0.04, 0.08])
-		opt_steps = rand(noise_rng, [[20], [10, 10], [5, 5, 5, 5]])
-		
-		
-		strj, utrj = data_shuffled[i]
-		x0 = strj[:, 1]
-		
-		res_drift = mpc(thiscost, ds, x0, model_flow, drift_steps; algo=algo, max_time=max_time, noise_weight=0.2, noise_rng=noise_rng, opt_steps=opt_steps, opt_seed=1)
-		x_drift = res_drift.trajectory[:, drift_steps]
-
-		init_res = trajectory(ds, model_invunit, x_drift, repeat(zeros(Float32, 2),length(opt_steps)), opt_steps)
-		init_strj = init_res.output_trajectory
+		init_res = trajectory(ds, model_invunit, x, zeros(Float32, 2*length(opt_steps)), opt_steps)
 		init_utrj = init_res.input_trajectory
-
-		res_invunit = mpc(thiscost, ds, x_drift, model_invunit, 20; algo=algo, max_time=max_time, noise_weight=0.0, opt_steps=opt_steps, opt_seed=1)
-
-		res_invunit_long = mpc(thiscost, ds, x_drift, model_invunit, 20; algo=algo, max_time=max_time, noise_weight=0.0, opt_steps=repeat([1], sum(opt_steps)), opt_seed=1)
-		
-		res_flow = mpc(thiscost, ds, x_drift, model_flow, 28; algo=algo, max_time=max_time, noise_weight=0.0, opt_steps=opt_steps, init_z = randn(noise_rng, Float32, length(opt_steps)*2), opt_seed=1)
-
-		res_flow_zero = mpc(thiscost, ds, x_drift, model_flow, 28; algo=algo, max_time=max_time, noise_weight=0.0, opt_steps=opt_steps, init_z = repeat(zeros(Float32, 2), length(opt_steps)), opt_seed=1)
-
-
-
-		res_id_stair = mpc(thiscost, ds, x_drift, (x, z)->z, 28; algo=algo, max_time=max_time, noise_weight=0.0, opt_steps=opt_steps, init_z = vec(init_utrj[:, 1:length(opt_steps)]), opt_seed=1, latent_dim = 2)
-
-		res_id_full = mpc(thiscost, ds, x_drift, (x, z)->z, 28; algo=algo, max_time=max_time, noise_weight=0.0, opt_steps=repeat([1], sum(opt_steps)), init_z = vec(init_utrj), opt_seed=1,  latent_dim=2)
-
-		
-
-		# res_invunit = optimize_latent(thiscost, ds, x_drift, model_invunit, [28]; init_z=zeros(2), algo=algo, max_time=max_time)		
-
-		# res_id_full = optimize_latent(thiscost, ds, x_drift, (x, z)->z, fill(1, sum(opt_steps)); init_z=vec(init_utrj), algo=algo, latent_dim=2, max_time=max_time)
-
-		push!(cost_res, 
-			  (norm_cost=res_invunit.total_cost, 
-			   norm_long_cost=res_invunit_long.total_cost,
-			   flow_rand_cost=res_flow.total_cost, 
-			   flow_zero_cost=res_flow_zero.total_cost, 
-			   basic_cost=res_id_stair.total_cost, 
-			   basic_long_cost=res_id_full.total_cost,
-			   max_time=max_time,
-			  opt_steps=opt_steps
-						)
-			 )
-
-		time_now = time()
-		if time_now - start_time > 60
-			start_time = time_now
-			JLD2.save(save_res_path, "result", cost_res)
-		end
-		# push!(cost_res, [res_invunit.objective, res_id_full.objective])
+	
+		res_base_long = smt_optimize_latent(ds, model_base, x, init_utrj, ones(Int64, sum(opt_steps)), smt_safety, smt_goal;
+			algo=algo,
+			max_penalty_evals=500,
+			seed=0,
+			latent_dim=2
+		)		
+	
+		res_base_short = Inf
+	try
+		start_idxs = cumsum(vcat(1, opt_steps[1:end-1]))
+		start_idxs = min.(start_idxs, size(init_utrj, 2))
+		init_z_short = vec(init_utrj[:, start_idxs])
+		# init_z_short = zeros(3*length(opt_steps))
+		res_base_short = smt_optimize_latent(ds, model_base, x, init_z_short, opt_steps, smt_safety, smt_goal;
+			algo=algo,
+			max_penalty_evals=500,
+			seed=0,
+			latent_dim=2
+		)	
+		catch res_base_short
 	end
 
-	JLD2.save(save_res_path, "result", cost_res)
-	cost_res
+		v = [res_invunit.evals_to_zero_penalty, res_base_long.evals_to_zero_penalty, res_base_short.evals_to_zero_penalty]
 
-	
+		if minimum(v) < Inf && minimum(v) > 1
+			push!(result, v)
+			count += 1
+		end
+	end
+
+	JLD2.save(res_file, "result", result)
+
+	result
 end
 
 # ╔═╡ Cell order:
 # ╠═deaa37a2-e572-11f0-1d8d-d3dddde17a2e
 # ╠═70fe22ad-d8dc-4776-ba3b-a50399325484
-# ╠═9a1f6973-1363-4207-8a8f-713a47d253ce
 # ╠═d0fc8b98-37ca-4a26-8289-2b408846f7b6
 # ╠═f16a452c-fc3c-427d-8e43-bae5db10dddd
 # ╠═d7873320-cce3-478b-8fa7-93b1063eb0c4
-# ╠═3b6f10e2-41c2-4b5a-9e63-5c15b0f8e5a1
-# ╠═5a9f6a0a-9a6a-4d21-ae4b-67d122a2b2b3
-# ╠═fdbb52af-2e55-4a09-9b9b-7a0bdb9f4c67
-# ╠═580a6ae6-5f95-4ec2-ab9d-b5f6d48d330b
 # ╠═d4b1f290-b47b-4c9d-8420-845bcb9bf163
 # ╠═730088b2-08f0-400b-98f2-5298ab5b9eb5
-# ╠═39a52a27-dd19-446e-9f43-520b170bac8c

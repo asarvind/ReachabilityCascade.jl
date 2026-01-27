@@ -318,56 +318,6 @@ let
 	(; losses, model, ema)
 end
 
-# ╔═╡ 0b2e2c0a-8f4e-4d2a-9a5d-63e2a7a5c1b1
-let
-	# NormalizingFlow baseline (trained on the same dataset/iterator format).
-	#
-	# NOTE: `epochs=0` means this cell will just load from `load_path_flow` (if present) and save to `save_path_flow`.
-	# Set `epochs>0` when you actually want to train.
-
-	# Dataset format: vector of named tuples with `state_trajectory` and `input_signal`.
-	data = JLD2.load("data/robotarm/armtrajectories.jld2", "trajectories")
-
-	# ----------------------------
-	# NormalizingFlow args (match InvertibleCoupling config)
-	# ----------------------------
-	spec = [128 128 128;
-	        1   1   1;
-	        1   1   1]
-	logscale_clamp = 2.0
-
-	# ----------------------------
-	# Training args (match InvertibleCoupling config)
-	# ----------------------------
-	epochs = 0
-	batch_size = 100
-	opt = Flux.OptimiserChain(Flux.ClipGrad(), Flux.ClipNorm(), Flux.Adam(1f-4))
-	save_period = 60.0
-
-	save_path_flow = "data/robotarm/temp/normalizingflow.jld2"
-	load_path_flow = save_path_flow
-
-	# Separate iterator instance so (when `epochs>0`) both trainings can be reproducible independently.
-	# Use the same iterator RNG seed as the InvertibleCoupling training cell for reproducibility.
-	it_flow = RobotArmIterator(data; rng=Random.MersenneTwister(0))
-
-	flow, losses_flow = build(NormalizingFlow, it_flow;
-		spec=spec,
-		logscale_clamp=logscale_clamp,
-		# Use the same init RNG seed as the InvertibleCoupling training cell for reproducibility.
-		rng=Random.MersenneTwister(200),
-		epochs=epochs,
-		batch_size=batch_size,
-		opt=opt,
-		use_memory=false,
-		save_path=save_path_flow,
-		load_path=load_path_flow,
-		save_period=save_period,
-	)
-
-	(; losses_flow)
-end
-
 # ╔═╡ a8967670-cb6a-4d82-940a-f2783bda11d1
 let
 	box1_size = 0.5
@@ -476,6 +426,95 @@ let
 	(res_unitinv.evals_to_zero_penalty, res_base.evals_to_zero_penalty, res_base_long.evals_to_zero_penalty, res_unitinv_long.evals_to_zero_penalty, res_cmaes), x0
 end
 
+# ╔═╡ 222870a9-4ff5-41f9-a863-5ecd9917d598
+let
+	box1_size = 0.5
+	box2_size = 1.0
+	ds = discrete_robot3dof(; t=0.1, dt=0.1, box_size=box1_size)
+	smt_safety, smt_goal, output_map = robot3dof_smt_formulas(ds; box1_size=box1_size, box2_size=box2_size)	
+	data = JLD2.load("data/robotarm/armtrajectories.jld2", "trajectories")
+
+	save_game = "data/robotarm/unitinvert/selfInitSeed2Iter0Epoch45EmaL0U999R1f5Latseed1.jld2"
+	model_invunit, _ = load_self(save_game)
+	model_base = (x,z) -> z
+
+	res_file = "data/robotarm/results/Seed2AlgoSLSQP.jld2"
+	rng = MersenneTwister(2)
+
+	
+
+	# algo = :LN_BOBYQA
+	algo = :LD_SLSQP
+
+	result = []
+	count = 0
+	max_count = 100
+
+	while count <= max_count
+		opt_steps_list = [[40], [20, 20], [14, 14, 12]]
+		opt_steps_id = rand(rng, 1:3)
+		opt_steps = opt_steps_list[opt_steps_id]
+		u_len = 3
+
+		id_sample = rand(rng, 1:length(data))
+		strj, _ = data[id_sample]
+		x = strj[:, 1]
+
+		# x[1] = rand(-pi/2*0.0:-pi/2*0.1:-pi/2*0.2)
+		# x[2] = rand(-pi/2*0.0:-pi/2*0.1:-pi/2*0.2)
+		# x[3] = rand(-pi/2*0.0:-pi/2*0.1:-pi/2*0.2)
+
+		x[10] += rand(0.1:0.01:0.12)
+
+		res_invunit = smt_optimize_latent(ds, model_invunit, x, repeat(zeros(3), length(opt_steps)), opt_steps, smt_safety, smt_goal;
+			u_len=u_len,
+			algo=algo,
+			max_time=Inf,
+			max_penalty_evals=500,
+			seed=0,
+			output_map=output_map,
+		)
+	
+		init_res = trajectory(ds, model_invunit, x, zeros(Float32, 3*length(opt_steps)), opt_steps)
+		init_utrj = init_res.input_trajectory
+	
+		res_base_long = smt_optimize_latent(ds, model_base, x, init_utrj, ones(Int64, sum(opt_steps)), smt_safety, smt_goal;
+			algo=algo,
+			max_penalty_evals=500,
+			seed=0,
+			latent_dim=3,
+			output_map=output_map,
+		)		
+	
+		res_base_short = Inf
+	try
+		start_idxs = cumsum(vcat(1, opt_steps[1:end-1]))
+		start_idxs = min.(start_idxs, size(init_utrj, 2))
+		# init_z_short = vec(init_utrj[:, start_idxs])
+		init_z_short = zeros(3*length(opt_steps))
+		res_base_short = smt_optimize_latent(ds, model_base, x, init_z_short, opt_steps, smt_safety, smt_goal;
+			algo=algo,
+			max_penalty_evals=500,
+			seed=0,
+			latent_dim=3,
+			output_map=output_map,
+		)	
+		catch res_base_short
+	end
+
+		v = [res_invunit.evals_to_zero_penalty, res_base_long.evals_to_zero_penalty, res_base_short.evals_to_zero_penalty]
+
+		if minimum(v) < Inf && minimum(v) > 1
+			push!(result, v)
+			count += 1
+		end
+	end
+
+	JLD2.save(res_file, "result", result)
+
+	result
+end
+
 # ╔═╡ Cell order:
 # ╠═32f4a462-f2ea-11f0-16bd-711456f4b53b
 # ╠═a472418d-ee68-4db4-a40e-a1cf8ae15ac8
@@ -483,5 +522,5 @@ end
 # ╠═4a6f2c43-8ef8-4d6f-9b6a-1b5f1a2b46e8
 # ╠═b2c91e2a-8d43-4d1b-9c7a-6c2e2a5b6e24
 # ╠═6f5bdf15-1d8c-4a8c-8c7d-05f51a4b96b8
-# ╠═0b2e2c0a-8f4e-4d2a-9a5d-63e2a7a5c1b1
 # ╠═a8967670-cb6a-4d82-940a-f2783bda11d1
+# ╠═222870a9-4ff5-41f9-a863-5ecd9917d598

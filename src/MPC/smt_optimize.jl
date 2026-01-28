@@ -24,6 +24,7 @@ output and input trajectories (all-time semantics).
 - `u_len=nothing`: forwarded to [`trajectory`](@ref) to slice decoded output.
 - `output_map=identity`: mapping from state to output for SMT evaluation.
 - `latent_dim=nothing`: required only when `model` is a function.
+- `trace=false`: record evaluation trace (eval counts, time, objective).
 
 # Returns
 Named tuple:
@@ -38,6 +39,8 @@ Named tuple:
 - `input_trajectory`: input trajectory for the best `z`.
 - `eventual_time_safe`: earliest time index where terminal constraints are met, if
   safety constraints are satisfied over the full horizon; `Inf` otherwise.
+- `trace` (optional): vector of named tuples with fields `eval_id`,
+  `penalty_eval_count`, `time_s`, `objective`.
 """
 function smt_optimize_latent(ds::DiscreteRandomSystem,
                              model,
@@ -54,7 +57,8 @@ function smt_optimize_latent(ds::DiscreteRandomSystem,
                              seed::Integer=rand(1:10000),
                              u_len=nothing,
                              output_map::Function=identity,
-                             latent_dim::Union{Nothing,Integer}=nothing)
+                             latent_dim::Union{Nothing,Integer}=nothing,
+                             trace::Bool=false)
     if algo == :GN_CMAES
         iter = max_penalty_evals > 0 ? Int(max_penalty_evals) : 200
         rng_local = Random.MersenneTwister(seed)
@@ -115,6 +119,7 @@ function smt_optimize_latent(ds::DiscreteRandomSystem,
     evals_to_zero = Ref(Float64(Inf))
     total_penalty_evals = 0
     opt_ref = Ref{NLopt.Opt}()
+    trace_entries = NamedTuple[]
     function my_objective_fn(z::Vector{Float64}, grad::Vector{Float64})
         eval_cost = use_grad ? (length(z0_vec) + 1) : 1
         if max_penalty_evals > 0 && total_penalty_evals + eval_cost > max_penalty_evals
@@ -142,6 +147,14 @@ function smt_optimize_latent(ds::DiscreteRandomSystem,
             evals_to_zero[] = eval_count
         end
         val = Float64(res.penalty)
+        if trace
+            push!(trace_entries, (;
+                eval_id=eval_count,
+                penalty_eval_count=total_penalty_evals,
+                time_s=time() - t0[],
+                objective=val,
+            ))
+        end
         if best_val[] == Inf || (t0[] !== nothing && time() - t0[] <= max_time)
             if val < best_val[]
                 best_val[] = val
@@ -172,6 +185,7 @@ function smt_optimize_latent(ds::DiscreteRandomSystem,
                        safety_input=safety_input_eff,
                        u_len=u_len_final,
                        output_map=output_map)
+    trace_out = trace ? trace_entries : nothing
 
     return (; objective=min_f,
              objective_time_bounded=best_val[],
@@ -184,7 +198,8 @@ function smt_optimize_latent(ds::DiscreteRandomSystem,
              result=ret,
              output_trajectory=best.output_trajectory,
              input_trajectory=best.input_trajectory,
-             eventual_time_safe=best.eventual_time_safe)
+             eventual_time_safe=best.eventual_time_safe,
+             trace=trace_out)
 end
 
 """

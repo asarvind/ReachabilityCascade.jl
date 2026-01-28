@@ -312,6 +312,7 @@ let
 		opt_steps_id = rand(rng, 1:3)
 		opt_steps = opt_steps_list[opt_steps_id]
 		u_len = 2
+		trace = true
 
 		id_sample = rand(rng, 1:length(overtake_data))
 		strj, _ = overtake_data[id_sample]
@@ -323,6 +324,7 @@ let
 			max_time=Inf,
 			max_penalty_evals=500,
 			seed=0,
+			trace=trace,
 		)
 	
 		init_res = trajectory(ds, model_invunit, x, zeros(Float32, 2*length(opt_steps)), opt_steps)
@@ -332,7 +334,8 @@ let
 			algo=algo,
 			max_penalty_evals=500,
 			seed=0,
-			latent_dim=2
+			latent_dim=2,
+			trace=trace,
 		)		
 	
 		res_base_short = Inf
@@ -345,7 +348,8 @@ let
 			algo=algo,
 			max_penalty_evals=500,
 			seed=0,
-			latent_dim=2
+			latent_dim=2,
+			trace=trace,
 		)	
 		catch res_base_short
 	end

@@ -405,6 +405,7 @@ let
 		opt_steps_id = rand(rng, 1:3)
 		opt_steps = opt_steps_list[opt_steps_id]
 		u_len = 3
+		trace = true
 
 		x = LazySets.sample(ds.X; rng=rng)
 		x[1:6] .= 0.0
@@ -415,12 +416,13 @@ let
 		res_invunit = Inf
 		try
 			res_invunit = smt_optimize_latent(ds, model_invunit, x, repeat(zeros(3), length(opt_steps)), opt_steps, smt_safety, smt_goal;
-				u_len=u_len,
-				algo=algo,
-				max_time=Inf,
-				max_penalty_evals=500,
-				seed=0,
-			)
+			u_len=u_len,
+			algo=algo,
+			max_time=Inf,
+			max_penalty_evals=500,
+			seed=0,
+			trace=trace,
+		)
 		catch res_invunit
 		end
 		res_invunit isa NamedTuple || continue
@@ -430,12 +432,13 @@ let
 	
 		res_base_long = Inf
 		try
-			res_base_long = smt_optimize_latent(ds, model_base, x, init_utrj, ones(Int64, sum(opt_steps)), smt_safety, smt_goal;
-				algo=algo,
-				max_penalty_evals=500,
-				seed=0,
-				latent_dim=3
-			)
+		res_base_long = smt_optimize_latent(ds, model_base, x, init_utrj, ones(Int64, sum(opt_steps)), smt_safety, smt_goal;
+			algo=algo,
+			max_penalty_evals=500,
+			seed=0,
+			latent_dim=3,
+			trace=trace,
+		)		
 		catch res_base_long
 		end
 	
@@ -449,7 +452,8 @@ let
 			algo=algo,
 			max_penalty_evals=500,
 			seed=0,
-			latent_dim=3
+			latent_dim=3,
+			trace=trace,
 		)	
 		catch res_base_short
 	end

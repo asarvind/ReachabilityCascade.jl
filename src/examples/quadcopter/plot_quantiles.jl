@@ -1,5 +1,6 @@
 using JLD2
 using Plots
+using Measures
 using ReachabilityCascade: quantile_plot
 
 # ---------------------------
@@ -19,10 +20,14 @@ output_file = joinpath(output_dir, "quadcopter_quantiles_$(String(algorithm)).pd
 show_legend = false
 xlabel = "% quantile"
 ylabel = "Evaluations"
-linewidth = 2
-labelsize = 12
-labelticksize = 10
+linewidth = 3.5
+labelsize = 30
+labelticksize = 20
 legendfontsize = 10
+left_margin = 8mm
+bottom_margin = 8mm
+right_margin = 8mm
+top_margin = 4mm
 xlims = (1, 100)
 ylims = nothing
 inf_replacement = 500.0
@@ -104,6 +109,13 @@ plt = quantile_plot(all_data...;
     quartile_levels=[0.25, 0.5, 0.75],
     quartile_lines=false,
     quartile_print=true,
+)
+
+plot!(plt,
+    left_margin=left_margin,
+    bottom_margin=bottom_margin,
+    right_margin=right_margin,
+    top_margin=top_margin,
 )
 
 mkpath(output_dir)

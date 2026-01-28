@@ -455,6 +455,7 @@ let
 		opt_steps_id = rand(rng, 1:3)
 		opt_steps = opt_steps_list[opt_steps_id]
 		u_len = 3
+		trace = true
 
 		id_sample = rand(rng, 1:length(data))
 		strj, _ = data[id_sample]
@@ -473,6 +474,7 @@ let
 			max_penalty_evals=500,
 			seed=0,
 			output_map=output_map,
+			trace=trace,
 		)
 	
 		init_res = trajectory(ds, model_invunit, x, zeros(Float32, 3*length(opt_steps)), opt_steps)
@@ -484,6 +486,7 @@ let
 			seed=0,
 			latent_dim=3,
 			output_map=output_map,
+			trace=trace,
 		)		
 	
 		res_base_short = Inf
@@ -498,6 +501,7 @@ let
 			seed=0,
 			latent_dim=3,
 			output_map=output_map,
+			trace=trace,
 		)	
 		catch res_base_short
 	end
